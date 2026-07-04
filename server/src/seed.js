@@ -55,6 +55,13 @@ async function main() {
     data: students.map(([name, roll, classId, roomId]) => ({ name, roll, classId, roomId })),
   });
 
+  // Demo: one student already marked "away" so the persistent-absence
+  // feature has something to show on first login.
+  const rahul = await prisma.student.findFirst({ where: { roll: "10A-01" } });
+  if (rahul) {
+    await prisma.student.update({ where: { id: rahul.id }, data: { awayReason: "Went home", awaySince: new Date().toISOString().slice(0, 10) } });
+  }
+
   console.log("Done. Every demo account's password is:", DEMO_PASSWORD);
   console.log("Usernames: principal, ao, coordinator, dbm, warden1, warden2, do1, do2, teacher1, teacher2, teacher3 (inactive), lai1, lai2");
 }

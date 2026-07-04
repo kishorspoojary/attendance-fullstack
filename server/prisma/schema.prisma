@@ -63,13 +63,18 @@ model HostelRoom {
 }
 
 model Student {
-  id      String      @id @default(cuid())
-  name    String
-  roll    String
-  classId String
-  class   Classroom   @relation(fields: [classId], references: [id])
-  roomId  String?
-  room    HostelRoom? @relation(fields: [roomId], references: [id])
+  id         String      @id @default(cuid())
+  name       String
+  roll       String
+  classId    String
+  class      Classroom   @relation(fields: [classId], references: [id])
+  roomId     String?
+  room       HostelRoom? @relation(fields: [roomId], references: [id])
+  // Persistent "away" status (e.g. went home). Once set by a Warden, the
+  // student counts as absent every day automatically until a Warden clears
+  // it via the report-back action — no daily re-marking needed.
+  awayReason String?
+  awaySince  String?
 }
 
 // Every master-data edit is proposed here by the Database Manager
@@ -94,8 +99,9 @@ model AttendanceRecord {
   classId             String
   class               Classroom @relation(fields: [classId], references: [id])
   headcount           Int?
-  wardenAbsences      Json      @default("{}") // { studentId: {by, byName, at} }
-  laiAbsences         Json      @default("{}")
+  wardenAbsences      Json      @default("{}") // { studentId: {by, byName, at, reason} }
+  laiAbsences         Json      @default("{}") // { studentId: {by, byName, at, reason: null} }
+  doVerified          Json      @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — DO's confirmed/entered reason, required before doApproved
   doApproved          Json?
   teacherApproved     Json?
   coordinatorApproved Json?

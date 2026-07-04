@@ -100,7 +100,38 @@ Render's free web services sleep after inactivity and take ~30–60 seconds to
 wake up on the first request — fine for a pilot, worth upgrading before
 real daily use at a fixed 11:00 AM deadline.
 
-## 4. What's simplified for v1
+## 4. What's new since v1
+
+- **Status views anytime, not just when it's your turn**: Coordinator and
+  Incharge Teacher now have a "status" tab showing the same live table
+  Principal sees (Incharge Teacher's is scoped to their floor). AO has a
+  "Hierarchy status" tab showing who covers what, and flags gaps (a room
+  with no Warden, a floor with no DO, an inactive account, etc.).
+- **Cutoff no longer bypasses Warden/LAI/DO verification.** The deadline
+  cutoff can still auto-pass a list stuck at Teacher, Coordinator, or AO,
+  but a list still waiting on the DO stays untouched \u2014 it has no tag and
+  isn't published until a person actually verifies it.
+- **Reasons for absence, and a persistent "away" status.** A Warden must
+  pick a reason when marking someone absent. Picking "Went home" doesn't
+  write to today's record at all \u2014 it sets a flag on the student that
+  counts them absent automatically every day until a Warden taps "Mark
+  reported." LAIs still just flag absentees with no reason.
+- **DO workflow now: headcount \u2192 verify each reason \u2192 approve.** The
+  absentee list only appears after the headcount is saved. For each
+  absentee, the DO confirms the Warden's reason or \u2014 for LAI-reported day
+  scholars, who arrive with no reason \u2014 enters one after a phone call.
+  Approval is blocked until every absentee has a verified reason.
+
+If you already ran `prisma migrate dev` against an older schema, run it
+again to pick up the new `Student.awayReason` / `awaySince` and
+`AttendanceRecord.doVerified` fields:
+```bash
+cd server
+npx prisma migrate dev --name add-reasons-and-away-status
+npm run seed   # optional: re-seed to see the demo away-student
+```
+
+## 5. What's simplified for v1
 
 - One combined `/api/state` endpoint returns the whole snapshot rather than
   many small paginated endpoints — fine at one-institution scale, worth
@@ -110,7 +141,7 @@ real daily use at a fixed 11:00 AM deadline.
 - Assignment scope (rooms/floors/classes) is stored as plain ID arrays on
   the user rather than a join table — simpler to reason about at this size.
 
-## 5. Next steps worth considering
+## 6. Next steps worth considering
 
 - Email/SMS reminders before the cutoff time.
 - A proper admin UI for creating floors (currently seed-only).

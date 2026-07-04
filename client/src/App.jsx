@@ -33,6 +33,8 @@ const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
 };
+const DAILY_REASONS = ["Sick", "Not in room", "Other"];
+const AWAY_REASON = "Went home";
 
 /* ---------------------------------------------------------------- */
 /* UI atoms                                                           */
@@ -193,8 +195,12 @@ export default function App() {
       { id: "approvals", label: "Master data approvals", icon: ShieldCheck },
       { id: "final", label: "Final attendance approval", icon: ClipboardCheck },
       { id: "dashboard", label: "Daily report", icon: LayoutDashboard },
+      { id: "hierarchy", label: "Hierarchy status", icon: Users },
     ],
-    COORDINATOR: [{ id: "coordinator", label: "Attendance approvals", icon: ListChecks }],
+    COORDINATOR: [
+      { id: "coordinator", label: "Attendance approvals", icon: ListChecks },
+      { id: "status", label: "Attendance status", icon: LayoutDashboard },
+    ],
     DB_MANAGER: [
       { id: "students", label: "Students", icon: GraduationCap },
       { id: "rooms", label: "Hostel & classes", icon: Bed },
@@ -204,7 +210,10 @@ export default function App() {
     ],
     WARDEN: [{ id: "warden", label: "Mark absentees", icon: Bed }],
     DO: [{ id: "do", label: "Verify & approve", icon: Phone }],
-    INCHARGE_TEACHER: [{ id: "teacher", label: "Approve lists", icon: ClipboardCheck }],
+    INCHARGE_TEACHER: [
+      { id: "teacher", label: "Approve lists", icon: ClipboardCheck },
+      { id: "status", label: "Attendance status", icon: LayoutDashboard },
+    ],
     LAI: [{ id: "lai", label: "Mark absentees", icon: GraduationCap }],
   };
   const tabs = ROLE_TABS[me.role] || [];
@@ -247,6 +256,8 @@ export default function App() {
           ) : (
             <>
               {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} onCutoff={me.role === "AO" ? () => runAction(() => api.runCutoff(date), "Cutoff run") : null} />}
+              {activeTab === "status" && <PrincipalDashboard state={state} date={date} onCutoff={null} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
+              {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
               {activeTab === "approvals" && <AOApprovals state={state} onApprove={(c) => runAction(() => api.approveChange(c.id), "Approved")} onReject={(c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected")} />}
               {activeTab === "final" && <FinalApproval state={state} date={date} runAction={runAction} onCutoff={() => runAction(() => api.runCutoff(date), "Cutoff run")} />}
               {activeTab === "coordinator" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Incharge Teacher has filed them." />}
@@ -280,15 +291,16 @@ function Stat({ label, value, tone = "slate" }) {
     </Card>
   );
 }
-function PrincipalDashboard({ state, date, onCutoff }) {
+function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subtitle }) {
   const day = state.attendance[date] || {};
-  const rows = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
+  const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.floorId)) : state.classes;
+  const rows = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
   const verified = rows.filter((x) => currentStageIndex(x.r) === STAGES.length).length;
   const autoPassed = rows.filter((x) => x.r.forcedPublish && currentStageIndex(x.r) < STAGES.length).length;
   return (
     <div>
-      <SectionTitle icon={LayoutDashboard} title="Daily attendance report" subtitle={`Target: fully approved and published by 11:00 AM \u2014 ${date}`} />
+      <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || `Target: fully approved and published by 11:00 AM \u2014 ${date}`} />
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Classes" value={rows.length} />
         <Stat label="Published" value={published} />
@@ -315,9 +327,68 @@ function PrincipalDashboard({ state, date, onCutoff }) {
                 </tr>
               );
             })}
+            {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400">No classes in this scope yet.</td></tr>}
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* AO: hierarchy / assignment status                                  */
+/* ---------------------------------------------------------------- */
+function AOHierarchyStatus({ state }) {
+  const byRole = (role) => state.staff.filter((s) => s.role === role);
+  const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("INCHARGE_TEACHER"), lais = byRole("LAI");
+
+  const roomsWithoutWarden = state.hostelRooms.filter((r) => !wardens.some((w) => (w.roomIds || []).includes(r.id)));
+  const floorsWithoutDO = state.floors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
+  const floorsWithoutTeacher = state.floors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
+  const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
+  const gaps = [
+    ...roomsWithoutWarden.map((r) => `${r.hostel} Room ${r.roomNo} has no Warden`),
+    ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
+    ...floorsWithoutTeacher.map((f) => `${f.name} has no Incharge Teacher`),
+    ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
+    ...state.staff.filter((s) => s.active === false).map((s) => `${s.name} (${ROLE_LABELS[s.role]}) isn't activated yet`),
+  ];
+
+  const Group = ({ label, icon, list, describe }) => (
+    <Card className="p-4">
+      <p className="mb-3 text-sm font-semibold text-slate-700">{label}</p>
+      <div className="space-y-2">
+        {list.map((s) => (
+          <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <span className="font-medium text-slate-700">{s.name}{s.active === false && <Badge tone="amber"> not activated</Badge>}</span>
+            <span className="text-xs text-slate-500">{describe(s)}</span>
+          </div>
+        ))}
+        {list.length === 0 && <p className="text-sm text-slate-400">None yet.</p>}
+      </div>
+    </Card>
+  );
+
+  return (
+    <div>
+      <SectionTitle icon={Users} title="Hierarchy status" subtitle="Who covers what, and any gaps in coverage." />
+      {gaps.length > 0 && (
+        <Card className="mb-5 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start gap-2 text-sm text-amber-800">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">{gaps.length} gap(s) to review</p>
+              <ul className="mt-1 list-inside list-disc text-amber-700">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
+            </div>
+          </div>
+        </Card>
+      )}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Group label="Wardens" list={wardens} describe={(w) => `${(w.roomIds || []).length} room(s)`} />
+        <Group label="Discipline Officers (pooled per floor)" list={dos} describe={(d) => `${(d.floorIds || []).length} floor(s)`} />
+        <Group label="Incharge Teachers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
+        <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
+      </div>
     </div>
   );
 }
@@ -377,17 +448,35 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
       {items.length === 0 && <EmptyNote text="Nothing waiting on you right now." />}
       <div className="space-y-3">
         {items.map(({ c, r }) => {
-          const absentees = { ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}) };
-          const count = Object.keys(absentees).length;
+          const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}) }).map(([sid, meta]) => ({
+            student: state.students.find((s) => s.id === sid),
+            reason: r.doVerified?.[sid]?.reason || meta.reason,
+          }));
+          const away = state.students.filter((s) => s.classId === c.id && s.awayReason);
+          const count = absentees.length + away.length;
           return (
             <Card key={c.id} className="p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="font-medium text-slate-800">{c.name}</div>
                   <div className="text-xs text-slate-500">{count} absent · headcount {r.headcount ?? "\u2014"}</div>
                 </div>
                 <Btn size="sm" variant="success" onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}><Check size={13} /> Approve</Btn>
               </div>
+              {count > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {absentees.map(({ student, reason }) => student && (
+                    <li key={student.id} className="flex justify-between rounded bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
+                      <span>{student.name} ({student.roll})</span><span className="text-slate-400">{reason || "no reason recorded"}</span>
+                    </li>
+                  ))}
+                  {away.map((s) => (
+                    <li key={s.id} className="flex justify-between rounded bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
+                      <span>{s.name} ({s.roll})</span><span className="text-slate-400">Away — {s.awayReason}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </Card>
           );
         })}
@@ -638,19 +727,109 @@ function MyChanges({ state, me }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Warden / LAI: mark absentees                                       */
+/* Warden: mark absentees with a reason, plus persistent "away" list  */
 /* ---------------------------------------------------------------- */
-function AbsenteeMarker({ title, subtitle, students, source, date, state, runAction }) {
+function WardenScreen({ state, date, me, runAction }) {
+  const rooms = me.roomIds || [];
+  const allStudents = state.students.filter((s) => rooms.includes(s.roomId));
+  const away = allStudents.filter((s) => s.awayReason);
+  const present = allStudents.filter((s) => !s.awayReason);
+  const [pickerFor, setPickerFor] = useState(null); // studentId currently choosing a reason
+
   return (
     <div>
-      <SectionTitle icon={source === "warden" ? Bed : GraduationCap} title={title} subtitle={subtitle} />
+      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today \u2014 picking a reason marks a student absent.`} />
+
+      {away.length > 0 && (
+        <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
+          <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
+          <div className="space-y-2">
+            {away.map((s) => (
+              <div key={s.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
+                <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {s.awayReason} since {s.awaySince}</span></span>
+                <Btn size="sm" variant="outline" onClick={() => runAction(() => api.reportBack(s.id), "Marked as reported back")}>Mark reported</Btn>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {allStudents.length === 0 && <EmptyNote text="No students assigned to you yet." />}
+      <div className="space-y-4">
+        {Object.entries(groupBy(present, (s) => s.classId)).map(([classId, list]) => {
+          const cls = state.classes.find((c) => c.id === classId);
+          const r = state.attendance[date]?.[classId] || emptyRecord();
+          const locked = !!r.doApproved;
+          const bucket = r.wardenAbsences || {};
+          return (
+            <Card key={classId} className="p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="font-medium text-slate-800">{cls?.name}</p>
+                {locked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {list.map((s) => {
+                  const entry = bucket[s.id];
+                  const choosing = pickerFor === s.id;
+                  return (
+                    <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="font-medium text-slate-700">{s.name}</span>
+                          <span className="ml-1 text-slate-400">({s.roll})</span>
+                        </div>
+                        {!locked && (
+                          <button onClick={() => setPickerFor(choosing ? null : s.id)} className="text-slate-400 hover:text-slate-700">
+                            <ChevronDown size={13} className={choosing ? "rotate-180" : ""} />
+                          </button>
+                        )}
+                      </div>
+                      {entry ? (
+                        <div className="mt-1 flex items-center justify-between text-rose-700">
+                          <span>Absent — {entry.reason}</span>
+                          {!locked && <button className="text-rose-400 hover:text-rose-700" onClick={() => runAction(() => api.setAbsence(date, classId, s.id, null))}><X size={12} /></button>}
+                        </div>
+                      ) : (
+                        !locked && <div className="mt-1 text-slate-400">Present</div>
+                      )}
+                      {choosing && !locked && (
+                        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
+                          {DAILY_REASONS.map((reason) => (
+                            <button key={reason} onClick={() => { runAction(() => api.setAbsence(date, classId, s.id, reason)); setPickerFor(null); }}
+                              className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">{reason}</button>
+                          ))}
+                          <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away \u2014 counted absent until reported back"); setPickerFor(null); }}
+                            className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100">{AWAY_REASON}</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* LAI: mark absentees, no reason \u2014 DO fills that in after a call */
+/* ---------------------------------------------------------------- */
+function LAIScreen({ state, date, me, runAction }) {
+  const classIds = me.classIds || [];
+  const students = state.students.filter((s) => classIds.includes(s.classId) && !s.awayReason);
+  return (
+    <div>
+      <SectionTitle icon={GraduationCap} title="Mark classroom absentees" subtitle="No reason needed here — the Discipline Officer will call home and record the reason." />
       {students.length === 0 && <EmptyNote text="No students assigned to you yet." />}
       <div className="space-y-4">
         {Object.entries(groupBy(students, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
           const r = state.attendance[date]?.[classId] || emptyRecord();
           const locked = !!r.doApproved;
-          const bucket = source === "warden" ? (r.wardenAbsences || {}) : (r.laiAbsences || {});
+          const bucket = r.laiAbsences || {};
           return (
             <Card key={classId} className="p-4">
               <div className="mb-2 flex items-center justify-between">
@@ -662,7 +841,7 @@ function AbsenteeMarker({ title, subtitle, students, source, date, state, runAct
                   const marked = !!bucket[s.id];
                   return (
                     <button key={s.id} disabled={locked}
-                      onClick={() => runAction(() => api.toggleAbsence(date, classId, s.id))}
+                      onClick={() => runAction(() => api.setAbsence(date, classId, s.id, marked ? null : "pending"))}
                       className={`rounded-lg border px-2.5 py-1.5 text-left text-xs font-medium transition disabled:opacity-60 ${marked ? "border-rose-300 bg-rose-50 text-rose-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
                       {s.name}<div className="text-[10px] text-slate-400">{s.roll}</div>
                     </button>
@@ -676,55 +855,91 @@ function AbsenteeMarker({ title, subtitle, students, source, date, state, runAct
     </div>
   );
 }
-function WardenScreen({ state, date, me, runAction }) {
-  const rooms = me.roomIds || [];
-  const students = state.students.filter((s) => rooms.includes(s.roomId));
-  return <AbsenteeMarker title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today`} students={students} source="warden" date={date} state={state} runAction={runAction} />;
-}
-function LAIScreen({ state, date, me, runAction }) {
-  const classIds = me.classIds || [];
-  const students = state.students.filter((s) => classIds.includes(s.classId));
-  return <AbsenteeMarker title="Mark classroom absentees" subtitle="Local attendance for your assigned class" students={students} source="lai" date={date} state={state} runAction={runAction} />;
-}
 
 /* ---------------------------------------------------------------- */
-/* DO screen                                                          */
+/* DO screen: headcount \u2192 verify each reason \u2192 approve             */
 /* ---------------------------------------------------------------- */
 function DoClassCard({ c, record, date, students, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
+  const [draftReasons, setDraftReasons] = useState({});
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
-  const list = Object.entries(combined).map(([sid, meta]) => ({ student: students.find((s) => s.id === sid), meta }));
+  const list = Object.entries(combined).map(([sid, meta]) => ({
+    student: students.find((s) => s.id === sid), meta,
+    verified: record.doVerified?.[sid]?.reason || null,
+  }));
+  const away = students.filter((s) => s.classId === c.id && s.awayReason);
   const approved = !!record.doApproved;
+  const headcountSaved = record.headcount != null;
+  const allVerified = list.every((item) => item.verified);
+
+  const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason));
 
   return (
     <Card className="p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium text-slate-800">{c.name}</p>
-        {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">Needs headcount & verification</Badge>}
+        {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">{!headcountSaved ? "Enter headcount to continue" : "Needs reason verification"}</Badge>}
       </div>
-      {list.length === 0 ? (
-        <p className="text-sm text-slate-400">No absentees reported for this class yet.</p>
-      ) : (
-        <ul className="mb-3 space-y-1.5">
-          {list.map(({ student, meta }) => student && (
-            <li key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-sm">
-              <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll})</span></span>
-              <span className="text-xs text-slate-400">reported by {meta.byName}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex flex-wrap items-end gap-3">
-        <Field label="Headcount present">
+
+      <Field label="Headcount present">
+        <div className="flex gap-2">
           <input type="number" min="0" disabled={approved} className={`${inputCls} w-28`} value={headcount} onChange={(e) => setHeadcount(e.target.value)} />
-        </Field>
-        <Btn variant="success" disabled={approved || headcount === ""} onClick={() => runAction(async () => {
-          await api.setHeadcount(date, c.id, Number(headcount));
-          await api.approveStage(date, c.id);
-        }, "Approved")}>
-          <CheckCircle2 size={14} /> Verified — approve list
-        </Btn>
-      </div>
+          {!approved && headcount !== "" && Number(headcount) !== record.headcount && (
+            <Btn size="sm" variant="outline" onClick={() => runAction(() => api.setHeadcount(date, c.id, Number(headcount)))}>Save</Btn>
+          )}
+        </div>
+      </Field>
+
+      {!headcountSaved ? (
+        <p className="mt-3 text-sm text-slate-400">The absentee list appears once you save today's headcount.</p>
+      ) : (
+        <>
+          {away.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Already away — no action needed</p>
+              <ul className="space-y-1">
+                {away.map((s) => (
+                  <li key={s.id} className="flex justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-sm text-slate-600">
+                    <span>{s.name} ({s.roll})</span><span className="text-xs text-slate-400">{s.awayReason} since {s.awaySince}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {list.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Verify each reason before approving</p>
+              {list.map(({ student, meta, verified }) => student && (
+                <div key={student.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI, no reason yet"}</span></span>
+                    {verified && <Badge tone="emerald"><CheckCircle2 size={11} /> Verified</Badge>}
+                  </div>
+                  {!approved && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {DAILY_REASONS.map((reason) => (
+                        <button key={reason} onClick={() => saveReason(student.id, reason)}
+                          className={`rounded-md border px-2 py-0.5 text-[11px] ${verified === reason ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"}`}>
+                          {reason}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4">
+            <Btn variant="success" disabled={approved || !allVerified} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
+              <CheckCircle2 size={14} /> {allVerified ? "Approve list" : "Verify all reasons first"}
+            </Btn>
+          </div>
+        </>
+      )}
     </Card>
   );
 }

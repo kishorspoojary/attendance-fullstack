@@ -5,6 +5,7 @@ import { authRouter } from "./routes/auth.js";
 import { stateRouter } from "./routes/state.js";
 import { changesRouter } from "./routes/changes.js";
 import { attendanceRouter } from "./routes/attendance.js";
+import { studentsRouter } from "./routes/students.js";
 
 const app = express();
 const origins = (process.env.CORS_ORIGIN || "http://localhost:5173").split(",").map((s) => s.trim());
@@ -17,6 +18,7 @@ app.use("/api/auth", authRouter);
 app.use("/api", stateRouter);
 app.use("/api", changesRouter);
 app.use("/api", attendanceRouter);
+app.use("/api", studentsRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);
