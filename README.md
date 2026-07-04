@@ -106,7 +106,13 @@ real daily use at a fixed 11:00 AM deadline.
   Incharge Teacher now have a "status" tab showing the same live table
   Principal sees (Incharge Teacher's is scoped to their floor). AO has a
   "Hierarchy status" tab showing who covers what, and flags gaps (a room
-  with no Warden, a floor with no DO, an inactive account, etc.).
+  with no Warden, a floor with no DO, an inactive account, etc.). Every
+  status view now has a date picker so you can look back at past days, not
+  just today.
+- **Status badges say which stage is holding things up** ("Pending —
+  Discipline Officer", "Pending — Coordinator", etc.) instead of a generic
+  "In progress," so anyone looking at the table can see exactly who to
+  chase.
 - **Cutoff no longer bypasses Warden/LAI/DO verification.** The deadline
   cutoff can still auto-pass a list stuck at Teacher, Coordinator, or AO,
   but a list still waiting on the DO stays untouched \u2014 it has no tag and

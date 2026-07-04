@@ -8,10 +8,10 @@ import { api } from "./api.js";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const STAGES = [
-  { key: "doApproved", label: "DO verified" },
-  { key: "teacherApproved", label: "Teacher approved" },
-  { key: "coordinatorApproved", label: "Coordinator approved" },
-  { key: "aoApproved", label: "AO approved" },
+  { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
+  { key: "teacherApproved", label: "Teacher approved", pendingLabel: "Incharge Teacher" },
+  { key: "coordinatorApproved", label: "Coordinator approved", pendingLabel: "Coordinator" },
+  { key: "aoApproved", label: "AO approved", pendingLabel: "AO" },
 ];
 function currentStageIndex(rec) {
   for (let i = 0; i < STAGES.length; i++) if (!rec[STAGES[i].key]) return i;
@@ -20,9 +20,9 @@ function currentStageIndex(rec) {
 function recordTag(rec) {
   const idx = currentStageIndex(rec);
   const published = idx === STAGES.length || rec.forcedPublish;
-  if (!published) return { label: "In progress", tone: "slate" };
+  if (!published) return { label: `Pending \u2014 ${STAGES[idx].pendingLabel}`, tone: "amber" };
   if (idx === STAGES.length) return { label: "Verified", tone: "emerald" };
-  const missing = STAGES.slice(idx).map((s) => s.label).join(", ");
+  const missing = STAGES.slice(idx).map((s) => s.pendingLabel).join(", ");
   return { label: `Auto-passed \u2014 missing: ${missing}`, tone: "rose" };
 }
 function emptyRecord() {
@@ -292,42 +292,47 @@ function Stat({ label, value, tone = "slate" }) {
   );
 }
 function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subtitle }) {
-  const day = state.attendance[date] || {};
+  const [viewDate, setViewDate] = useState(date);
+  const day = state.attendance[viewDate] || {};
   const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.floorId)) : state.classes;
   const rows = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
   const verified = rows.filter((x) => currentStageIndex(x.r) === STAGES.length).length;
   const autoPassed = rows.filter((x) => x.r.forcedPublish && currentStageIndex(x.r) < STAGES.length).length;
+  const isToday = viewDate === date;
   return (
     <div>
-      <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || `Target: fully approved and published by 11:00 AM \u2014 ${date}`} />
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Target: fully approved and published by 11:00 AM \u2014 ${viewDate}` : `Viewing history for ${viewDate}`)} />
+        <Field label="Date">
+          <input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} />
+        </Field>
+      </div>
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Classes" value={rows.length} />
         <Stat label="Published" value={published} />
         <Stat label="Verified" value={verified} tone="emerald" />
         <Stat label="Auto-passed" value={autoPassed} tone="rose" />
       </div>
-      {onCutoff && <div className="mb-5"><Btn variant="ghost" onClick={onCutoff}><Clock size={14} /> Run 11:00 AM cutoff now (demo)</Btn></div>}
+      {onCutoff && isToday && <div className="mb-5"><Btn variant="ghost" onClick={onCutoff}><Clock size={14} /> Run 11:00 AM cutoff now (demo)</Btn></div>}
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Absent</th><th className="px-4 py-2.5">Stage</th><th className="px-4 py-2.5">Status</th></tr>
+            <tr><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Absent</th><th className="px-4 py-2.5">Status</th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map(({ c, r }) => {
               const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
-              const idx = currentStageIndex(r);
               const tag = recordTag(r);
               return (
                 <tr key={c.id}>
                   <td className="px-4 py-2.5 font-medium text-slate-800">{c.name}</td>
                   <td className="px-4 py-2.5 text-slate-600">{absentCount}</td>
-                  <td className="px-4 py-2.5 text-slate-500">{idx === STAGES.length ? "Complete" : STAGES[idx].label + " pending"}</td>
                   <td className="px-4 py-2.5"><Badge tone={tag.tone}>{tag.label}</Badge></td>
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400">No classes in this scope yet.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-slate-400">No classes in this scope yet.</td></tr>}
           </tbody>
         </table>
       </Card>
