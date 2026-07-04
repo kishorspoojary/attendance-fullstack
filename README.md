@@ -11,6 +11,13 @@ attendance-fullstack/
   client/   React + Vite frontend
 ```
 
+**New to this codebase?** Read [`HOW_IT_WORKS.md`](./HOW_IT_WORKS.md) first —
+it explains how the frontend, backend, and database talk to each other,
+walks through one full click-to-database example, and links out to a
+suggested reading order. Every file also has comments explaining what it
+does and why, written for someone learning as they go.
+
+
 ## 1. Run it locally
 
 ### 1.1 Get a free database

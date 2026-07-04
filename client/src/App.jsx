@@ -1,22 +1,53 @@
+// ============================================================================
+// The entire frontend lives in this one file, organized top-to-bottom as:
+//
+//   1. Small helper functions and constants (STAGES, recordTag, etc.) — pure
+//      JavaScript, no React, used by many components below.
+//   2. "UI atoms" — tiny reusable pieces (Badge, Card, Btn, Field...) that
+//      every screen is built out of, so the whole app looks consistent.
+//   3. Login — shown instead of everything else until you're logged in.
+//   4. App — the top-level component. It loads data once, decides which
+//      screen to show based on your role, and passes a `runAction` helper
+//      down to everyone so any button can call the API and refresh.
+//   5. One component per screen (WardenScreen, DOScreen, AOApprovals, ...),
+//      each corresponding to one tab in the sidebar.
+//
+// New to React? A "component" is just a function that returns JSX (the
+// HTML-looking syntax below) describing what to render. `useState` gives a
+// component memory that survives between re-renders; calling its setter
+// function schedules React to redraw. See ../../HOW_IT_WORKS.md for a fuller
+// walkthrough with a step-by-step example of what happens when you click a
+// button in this app.
+// ============================================================================
 import { useState, useEffect, useCallback } from "react";
 import {
   Building2, ClipboardCheck, ShieldCheck, GraduationCap, Bed, UserCog, ListChecks,
   Clock, CheckCircle2, XCircle, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
 } from "lucide-react";
-import { api } from "./api.js";
+import { api } from "./api.js"; // the only place that actually talks to the backend
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => new Date().toISOString().slice(0, 10); // "2026-07-04" style date, used as the default day everywhere
+
+// The four approval stages, in order, mirrored from server/src/stages.js.
+// (Duplicated rather than imported because the frontend and backend are
+// separate projects that don't share code — see HOW_IT_WORKS.md, section 1.)
 const STAGES = [
   { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
   { key: "teacherApproved", label: "Teacher approved", pendingLabel: "Incharge Teacher" },
   { key: "coordinatorApproved", label: "Coordinator approved", pendingLabel: "Coordinator" },
   { key: "aoApproved", label: "AO approved", pendingLabel: "AO" },
 ];
+// Given one AttendanceRecord, returns 0 if nothing's approved yet (waiting
+// on the DO), 1 if DO is done but Teacher isn't, ... up to STAGES.length (4)
+// once everything is approved. Used everywhere we need to show progress.
 function currentStageIndex(rec) {
   for (let i = 0; i < STAGES.length; i++) if (!rec[STAGES[i].key]) return i;
   return STAGES.length;
 }
+// Turns a record's raw approval state into a short label + color for a
+// Badge — this is what makes the "Pending — Discipline Officer" /
+// "Verified" / "Auto-passed" text you see in every status table.
 function recordTag(rec) {
   const idx = currentStageIndex(rec);
   const published = idx === STAGES.length || rec.forcedPublish;
@@ -25,6 +56,9 @@ function recordTag(rec) {
   const missing = STAGES.slice(idx).map((s) => s.pendingLabel).join(", ");
   return { label: `Auto-passed \u2014 missing: ${missing}`, tone: "rose" };
 }
+// A record's default shape before anything has happened for a class/day.
+// Used so the UI never has to special-case "there's no record yet" —
+// components can always assume every field exists, just empty/null.
 function emptyRecord() {
   return { wardenAbsences: {}, laiAbsences: {}, headcount: null, doApproved: null, teacherApproved: null, coordinatorApproved: null, aoApproved: null, forcedPublish: false, skippedStages: [] };
 }
@@ -33,11 +67,12 @@ const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
 };
-const DAILY_REASONS = ["Sick", "Not in room", "Other"];
-const AWAY_REASON = "Went home";
+const DAILY_REASONS = ["Sick", "Not in room", "Other"]; // reasons that only apply to today
+const AWAY_REASON = "Went home"; // the one reason that persists across days — see WardenScreen below
 
 /* ---------------------------------------------------------------- */
-/* UI atoms                                                           */
+/* UI atoms — small, reusable, no business logic of their own.       */
+/* Every screen further down is built by combining these.            */
 /* ---------------------------------------------------------------- */
 const TONES = {
   slate: "bg-slate-100 text-slate-600 border-slate-200",
@@ -94,7 +129,8 @@ function groupBy(arr, fn) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Login screen                                                       */
+/* ---------------------------------------------------------------- */
+/* Login screen — shown instead of everything else until logged in.  */
 /* ---------------------------------------------------------------- */
 function Login({ onLoggedIn }) {
   const [username, setUsername] = useState("");
@@ -106,10 +142,10 @@ function Login({ onLoggedIn }) {
     setError(""); setBusy(true);
     try {
       const { token, user } = await api.login(username, password);
-      api.setToken(token);
+      api.setToken(token); // saved to localStorage so a page refresh doesn't log you out
       onLoggedIn(user);
     } catch (e) {
-      setError(e.message);
+      setError(e.message); // the exact message the server sent, e.g. "Incorrect username or password"
     }
     setBusy(false);
   };
@@ -138,23 +174,31 @@ function Login({ onLoggedIn }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* App shell                                                          */
+/* App shell — the top-level component. Everything else in this file */
+/* is either rendered by this, or rendered by something this renders. */
 /* ---------------------------------------------------------------- */
 export default function App() {
-  const [state, setState] = useState(null);
-  const [me, setMe] = useState(null);
+  const [state, setState] = useState(null); // the full snapshot from GET /api/state — null until loaded
+  const [me, setMe] = useState(null); // the logged-in user, or null if not logged in
   const [loading, setLoading] = useState(true);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [tab, setTab] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false); // have we finished the initial "do we have a saved token?" check
+  const [tab, setTab] = useState(null); // which sidebar tab is active
+  const [toast, setToast] = useState(null); // the little pop-up message in the bottom-right corner
   const date = todayStr();
 
+  // Re-fetches everything from the server and stores it in `state`. Called
+  // once on page load (below), and again after every single action anyone
+  // takes — see runAction. This "just refetch everything" approach is much
+  // simpler than trying to patch `state` in place after each API call, at
+  // the cost of a bit more network traffic; fine at this app's scale.
   const refresh = useCallback(async () => {
     try {
       const data = await api.getState();
       setState(data);
       setMe(data.me);
     } catch (e) {
+      // If our saved token turned out to be invalid/expired, drop back to
+      // the login screen instead of showing a broken, empty app.
       if (String(e.message).toLowerCase().includes("logged in") || String(e.message).toLowerCase().includes("expired")) {
         api.clearToken(); setMe(null);
       }
@@ -162,6 +206,9 @@ export default function App() {
     setLoading(false);
   }, []);
 
+  // useEffect with an empty-ish dependency array runs once, right after the
+  // component first appears — this is where we check "were we already
+  // logged in from a previous visit?" and load data if so.
   useEffect(() => {
     if (api.hasToken()) refresh();
     else setLoading(false);
@@ -170,13 +217,18 @@ export default function App() {
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 2800); };
 
+  // The single function every button in this app calls. It wraps whatever
+  // API call the button needs to make: run it, refetch the full app state
+  // so everyone's screen is up to date, and show a success or error toast.
+  // Centralizing this means no component has to remember to call refresh()
+  // itself or handle errors individually.
   const runAction = async (fn, successMsg) => {
     try {
       await fn();
       await refresh();
       if (successMsg) showToast(successMsg);
     } catch (e) {
-      showToast(e.message, "rose");
+      showToast(e.message, "rose"); // the server's error message, shown directly to the user
     }
   };
 
@@ -291,6 +343,12 @@ function Stat({ label, value, tone = "slate" }) {
     </Card>
   );
 }
+// The status/report table used by Principal, Coordinator, and Incharge
+// Teacher (with different `scopeFloorIds`/`title`/`subtitle` per role — see
+// where each is rendered in App() above). `viewDate` is local state so
+// browsing history doesn't require a network round trip: state.attendance
+// already contains every date's records (routes/state.js fetches all of
+// them), we're just choosing which date's slice to display.
 function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
@@ -343,6 +401,10 @@ function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subti
 /* ---------------------------------------------------------------- */
 /* AO: hierarchy / assignment status                                  */
 /* ---------------------------------------------------------------- */
+// AO's "who covers what" view. Nothing here needs its own API call — it's
+// entirely computed from data we already have in `state` (staff, floors,
+// rooms, classes), by checking, for every room/floor/class, whether any
+// staff member's assignment array includes it.
 function AOHierarchyStatus({ state }) {
   const byRole = (role) => state.staff.filter((s) => s.role === role);
   const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("INCHARGE_TEACHER"), lais = byRole("LAI");
@@ -441,6 +503,13 @@ function AOApprovals({ state, onApprove, onReject }) {
 /* ---------------------------------------------------------------- */
 /* Approval queue (shared by Teacher / Coordinator / AO-final)        */
 /* ---------------------------------------------------------------- */
+// One shared component for three different screens: Incharge Teacher's
+// "Approve lists", Coordinator's "Attendance approvals", and AO's "Final
+// attendance approval". They're all the same shape — a list of classes
+// waiting on you, an Approve button, and a history of what you've already
+// done — so instead of three near-identical components, this one takes
+// `stageKey` (which field to set) and `requiredPriorKey` (which field must
+// already be set before you're allowed to act) as props.
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note }) {
   const day = state.attendance[date] || {};
   const withRecord = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
@@ -524,6 +593,14 @@ function FinalApproval({ state, date, runAction, onCutoff }) {
 /* ---------------------------------------------------------------- */
 /* DB Manager screens                                                  */
 /* ---------------------------------------------------------------- */
+// The Database Manager's four admin screens (this one plus RoomsAdmin,
+// AssignAdmin, ActivateAdmin below) all follow the same pattern: fill in a
+// small form, click a button that calls `api.proposeChange(...)`, which
+// creates a PendingChange row on the server — nothing here ever writes to
+// the real students/rooms/staff tables directly. Look at StudentsAdmin's
+// submitAdd/submitEdit/submitDelete for the pattern; the others just repeat
+// it for different change types (see server/src/applyChange.js for what
+// each type actually does once an AO approves it).
 function StudentsAdmin({ state, runAction }) {
   const [name, setName] = useState(""); const [roll, setRoll] = useState("");
   const [classId, setClassId] = useState(""); const [roomId, setRoomId] = useState("");
@@ -734,6 +811,14 @@ function MyChanges({ state, me }) {
 /* ---------------------------------------------------------------- */
 /* Warden: mark absentees with a reason, plus persistent "away" list  */
 /* ---------------------------------------------------------------- */
+// The Warden's screen — the most stateful component in the app.
+// `pickerFor` remembers which single student currently has their little
+// reason-picker expanded (only one at a time, across every room/class).
+// Students are split into two groups before rendering: `away` (persistent,
+// no daily action needed) and `present` (everyone else, who might get
+// marked absent today). See constants.js on the server for why "Went home"
+// is the one reason that goes through a different API call (markAway)
+// instead of the normal setAbsence.
 function WardenScreen({ state, date, me, runAction }) {
   const rooms = me.roomIds || [];
   const allStudents = state.students.filter((s) => rooms.includes(s.roomId));
@@ -822,6 +907,11 @@ function WardenScreen({ state, date, me, runAction }) {
 /* ---------------------------------------------------------------- */
 /* LAI: mark absentees, no reason \u2014 DO fills that in after a call */
 /* ---------------------------------------------------------------- */
+// The LAI's screen — much simpler than the Warden's: just a present/absent
+// toggle with no reason picker, because LAIs never supply a reason (see
+// server/src/routes/attendance.js — the server ignores any reason an LAI
+// sends anyway). Students already on a persistent "away" status are
+// filtered out entirely; they're the Warden's concern, not the LAI's.
 function LAIScreen({ state, date, me, runAction }) {
   const classIds = me.classIds || [];
   const students = state.students.filter((s) => classIds.includes(s.classId) && !s.awayReason);
@@ -864,6 +954,13 @@ function LAIScreen({ state, date, me, runAction }) {
 /* ---------------------------------------------------------------- */
 /* DO screen: headcount \u2192 verify each reason \u2192 approve             */
 /* ---------------------------------------------------------------- */
+// One card per class on the DO's screen — this is where the headcount →
+// verify-each-reason → approve sequence from the workflow actually lives.
+// `headcount` is local state (not read from `record` on every render) so
+// typing in the box doesn't need a network call on every keystroke; only
+// clicking "Save" sends it. `allVerified` recomputes on every render from
+// `record.doVerified`, which is why the Approve button enables itself the
+// instant the last reason is confirmed, with no extra code needed for that.
 function DoClassCard({ c, record, date, students, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
   const [draftReasons, setDraftReasons] = useState({});
@@ -948,6 +1045,11 @@ function DoClassCard({ c, record, date, students, runAction }) {
     </Card>
   );
 }
+// The DO's screen: one DoClassCard per class on their assigned floor(s).
+// `poolmates` finds other DOs who share at least one floor with this DO,
+// purely to show a friendly "you're sharing this with..." note — it has no
+// effect on what they're allowed to do; the real pooling logic (either one
+// can approve) lives entirely on the server.
 function DOScreen({ state, date, me, runAction }) {
   const floorClasses = state.classes.filter((c) => (me.floorIds || []).includes(c.floorId));
   const poolmates = state.staff.filter((s) => s.role === "DO" && s.id !== me.id && (s.floorIds || []).some((f) => (me.floorIds || []).includes(f)));

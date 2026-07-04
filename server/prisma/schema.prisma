@@ -1,5 +1,22 @@
-// Prisma schema for the Student & Hostel Attendance system.
+// ============================================================================
+// PRISMA SCHEMA — the blueprint for every table in the database.
+//
+// If you've never seen Prisma before: each "model" below becomes a real
+// database table. Prisma reads this file and generates JavaScript functions
+// (like `prisma.student.create(...)`) that we use everywhere in server/src.
+// You never have to write raw SQL — Prisma turns these models into it.
+//
+// Quick vocabulary for the annotations you'll see below:
+//   @id           → this field is the table's primary key (unique row identifier)
+//   @default(...) → the value a field gets if you don't supply one
+//   @unique       → no two rows may share this value (e.g. two users, same username)
+//   @relation     → this field links to a row in another table (a foreign key)
+//   String?       → the "?" means this field is optional (can be null)
+//   Json          → a flexible field that can hold any JSON — we use these for
+//                   small nested objects that don't need their own table
+//
 // Targets Postgres (works great with free tiers like Neon or Supabase).
+// ============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -10,6 +27,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// The eight roles from the workflow. Prisma "enums" restrict a field to a
+// fixed list of values — the database will reject anything else.
 enum Role {
   PRINCIPAL
   AO
@@ -21,22 +40,31 @@ enum Role {
   LAI
 }
 
+// Every person who can log in — one table for all eight roles, distinguished
+// by the `role` field. Which fields matter depends on the role:
+//   - Warden        uses roomIds
+//   - DO / Teacher  use floorIds (they're "pooled": several staff can share
+//                    the same floor, and any one of them can act)
+//   - LAI           uses classIds
+//   - everyone else leaves those arrays empty
 model User {
-  id           String   @id @default(cuid())
+  id           String   @id @default(cuid()) // cuid() auto-generates a unique id string
   name         String
   username     String   @unique
-  passwordHash String
+  passwordHash String   // never store the real password — only its hash (see auth.js)
   role         Role
-  active       Boolean  @default(true)
-  // scope of responsibility, stored as arrays of ids — kept simple on purpose
-  roomIds      Json     @default("[]") // Warden: hostel room ids
-  floorIds     Json     @default("[]") // DO / Incharge Teacher: floor ids (pooled)
-  classIds     Json     @default("[]") // LAI: classroom ids
+  active       Boolean  @default(true) // field staff start inactive until the DB Manager activates them
+  roomIds      Json     @default("[]") // Warden: which hostel room ids they cover
+  floorIds     Json     @default("[]") // DO / Incharge Teacher: which floor ids they cover (pooled)
+  classIds     Json     @default("[]") // LAI: which classroom ids they cover
   createdAt    DateTime @default(now())
 
-  pendingChanges PendingChange[]
+  pendingChanges PendingChange[] // every change this user has proposed (see below)
 }
 
+// A physical floor of the building. Both classrooms and hostel rooms belong
+// to a floor, which is how DOs/Teachers end up covering multiple classes or
+// rooms at once — they're assigned to the floor, not to each class one by one.
 model Floor {
   id         String       @id @default(cuid())
   name       String
@@ -63,51 +91,72 @@ model HostelRoom {
 }
 
 model Student {
-  id         String      @id @default(cuid())
-  name       String
-  roll       String
-  classId    String
-  class      Classroom   @relation(fields: [classId], references: [id])
-  roomId     String?
-  room       HostelRoom? @relation(fields: [roomId], references: [id])
-  // Persistent "away" status (e.g. went home). Once set by a Warden, the
-  // student counts as absent every day automatically until a Warden clears
-  // it via the report-back action — no daily re-marking needed.
+  id      String      @id @default(cuid())
+  name    String
+  roll    String
+  classId String
+  class   Classroom   @relation(fields: [classId], references: [id])
+  roomId  String? // null means "day scholar" — no hostel room
+  room    HostelRoom? @relation(fields: [roomId], references: [id])
+
+  // Persistent "away" status (e.g. went home). Once a Warden sets this, the
+  // student counts as absent automatically every single day — no one has to
+  // re-mark them — until a Warden clears it via the "report back" action.
   awayReason String?
   awaySince  String?
 }
 
-// Every master-data edit is proposed here by the Database Manager
-// and only takes effect once the AO approves it.
+// The Database Manager never edits students/rooms/staff directly. Instead
+// every edit becomes a row here with status "pending", and only takes real
+// effect once an AO approves it (see applyChange.js for what "takes effect"
+// means for each type of change). This gives a paper trail of who requested
+// what, and enforces the two-person control the workflow calls for.
 model PendingChange {
-  id             String   @id @default(cuid())
-  type           String // add_student | edit_student | delete_student | add_room | add_class | assign_warden | assign_do | assign_teacher | assign_lai | activate_staff
-  summary        String
-  payload        Json
-  requestedById  String
-  requestedBy    User     @relation(fields: [requestedById], references: [id])
-  status         String   @default("pending") // pending | approved | rejected
-  reason         String?
-  createdAt      DateTime @default(now())
+  id            String   @id @default(cuid())
+  type          String // e.g. "add_student", "assign_warden" — see applyChange.js for the full list
+  summary       String // a short human-readable description shown in the AO's approval queue
+  payload       Json // the actual data needed to apply the change (shape depends on `type`)
+  requestedById String
+  requestedBy   User     @relation(fields: [requestedById], references: [id])
+  status        String   @default("pending") // pending | approved | rejected
+  reason        String? // filled in if an AO rejects it
+  createdAt     DateTime @default(now())
 }
 
-// One row per class per day. Each approval stage is stored as a small
-// {by, byName, at} JSON blob, or null if not yet done.
+// The heart of the daily workflow: one row per classroom per day. As the day
+// progresses, more of the *Approved fields get filled in, in strict order
+// (see server/src/stages.js). Each one holds a small JSON object like
+// { by: "userId123", byName: "Priya", at: "2026-07-04T09:15:00.000Z" } — or
+// stays null until that stage happens.
 model AttendanceRecord {
-  id                  String    @id @default(cuid())
-  date                String // YYYY-MM-DD
-  classId             String
-  class               Classroom @relation(fields: [classId], references: [id])
-  headcount           Int?
-  wardenAbsences      Json      @default("{}") // { studentId: {by, byName, at, reason} }
-  laiAbsences         Json      @default("{}") // { studentId: {by, byName, at, reason: null} }
-  doVerified          Json      @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — DO's confirmed/entered reason, required before doApproved
+  id      String    @id @default(cuid())
+  date    String // "YYYY-MM-DD" — plain text is simplest for a value we only ever compare for equality
+  classId String
+  class   Classroom @relation(fields: [classId], references: [id])
+
+  headcount      Int? // physical count the DO enters before they can approve
+  wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason} } — from Wardens
+  laiAbsences    Json @default("{}") // { studentId: {by, byName, at, reason: null} } — from LAIs, no reason yet
+  doVerified     Json @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — DO's confirmed reason; required for every absentee before doApproved can be set
+
+  // The four sequential approval stages. Each stays null until that person
+  // acts, and once set, is never cleared (approving is one-directional).
   doApproved          Json?
   teacherApproved     Json?
   coordinatorApproved Json?
   aoApproved          Json?
-  forcedPublish       Boolean   @default(false)
-  skippedStages       Json      @default("[]")
 
+  // If the 11:00 deadline passes before every stage is done, the AO's
+  // cutoff action can force this record to "publish" anyway — but only if
+  // doApproved is already set (see routes/attendance.js: cutoff intentionally
+  // never bypasses Warden/LAI/DO verification). skippedStages then records
+  // exactly which later stages were skipped, so the tag on the frontend can
+  // say what's still missing.
+  forcedPublish Boolean @default(false)
+  skippedStages Json    @default("[]")
+
+  // A database-level rule: there can only ever be one AttendanceRecord for a
+  // given (date, classId) pair. This is what makes "get or create today's
+  // record for this class" a safe operation to repeat.
   @@unique([date, classId])
 }

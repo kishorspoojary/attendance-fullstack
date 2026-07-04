@@ -1,12 +1,28 @@
+// ============================================================================
+// Fills an empty database with realistic sample data — one floor, two
+// classes, four hostel rooms, all eight roles, and twelve students — so you
+// have something to click around in the moment you first run the app.
+//
+// Run it with `npm run seed`. It's safe to run once on a fresh database;
+// running it twice will fail (or duplicate data) since it always creates
+// new rows rather than checking what already exists — this is a seed
+// script for getting started, not a repeatable migration.
+// ============================================================================
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
+// This file talks to Prisma directly rather than importing the shared
+// `prisma` from db.js, since it's a one-off script run from the command
+// line, not part of the running server.
 const prisma = new PrismaClient();
-const DEMO_PASSWORD = "password123";
+const DEMO_PASSWORD = "password123"; // every seeded account shares this, for convenience
 
 async function main() {
   console.log("Seeding demo data...");
+  // Every account gets the SAME hash of the SAME password — bcrypt.hash is
+  // slow on purpose (it's designed to resist brute-forcing), so we only
+  // compute it once and reuse it below instead of once per user.
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
 
   const floor1 = await prisma.floor.create({ data: { name: "Academic Floor 1" } });
@@ -19,6 +35,10 @@ async function main() {
     rooms[roomNo] = await prisma.hostelRoom.create({ data: { hostel: "Hostel Block A", roomNo, floorId: floor1.id } });
   }
 
+  // One user per role, demonstrating the "pooled" assignment model: both
+  // do1/do2 and teacher1/teacher2 share the exact same floorIds, so either
+  // one can act on any class on that floor. teacher3 is deliberately left
+  // inactive to show what a locked-out login looks like.
   await prisma.user.createMany({
     data: [
       { username: "principal", name: "Dr. Rao", role: "PRINCIPAL", passwordHash },
@@ -37,11 +57,14 @@ async function main() {
     ],
   });
 
+  // A plain array of tuples is just a compact way to write out twelve rows
+  // by hand — the .map() below turns each tuple into the object shape
+  // Prisma actually wants.
   const students = [
     ["Rahul Verma", "10A-01", class10A.id, rooms["101"].id],
     ["Sanjay Gupta", "10A-02", class10A.id, rooms["101"].id],
     ["Kiran Shah", "10A-03", class10A.id, rooms["102"].id],
-    ["Meena Joshi", "10A-04", class10A.id, null],
+    ["Meena Joshi", "10A-04", class10A.id, null], // null roomId = day scholar, no hostel room
     ["Aisha Khan", "10A-05", class10A.id, rooms["103"].id],
     ["Ravi Teja", "10A-06", class10A.id, null],
     ["Neha Reddy", "10B-01", class10B.id, rooms["104"].id],
