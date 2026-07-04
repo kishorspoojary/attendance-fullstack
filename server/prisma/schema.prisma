@@ -1,0 +1,107 @@
+// Prisma schema for the Student & Hostel Attendance system.
+// Targets Postgres (works great with free tiers like Neon or Supabase).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PRINCIPAL
+  AO
+  COORDINATOR
+  DB_MANAGER
+  WARDEN
+  DO
+  INCHARGE_TEACHER
+  LAI
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  username     String   @unique
+  passwordHash String
+  role         Role
+  active       Boolean  @default(true)
+  // scope of responsibility, stored as arrays of ids — kept simple on purpose
+  roomIds      Json     @default("[]") // Warden: hostel room ids
+  floorIds     Json     @default("[]") // DO / Incharge Teacher: floor ids (pooled)
+  classIds     Json     @default("[]") // LAI: classroom ids
+  createdAt    DateTime @default(now())
+
+  pendingChanges PendingChange[]
+}
+
+model Floor {
+  id         String       @id @default(cuid())
+  name       String
+  classrooms Classroom[]
+  rooms      HostelRoom[]
+}
+
+model Classroom {
+  id                String              @id @default(cuid())
+  name              String
+  floorId           String
+  floor             Floor               @relation(fields: [floorId], references: [id])
+  students          Student[]
+  attendanceRecords AttendanceRecord[]
+}
+
+model HostelRoom {
+  id       String    @id @default(cuid())
+  hostel   String
+  roomNo   String
+  floorId  String
+  floor    Floor     @relation(fields: [floorId], references: [id])
+  students Student[]
+}
+
+model Student {
+  id      String      @id @default(cuid())
+  name    String
+  roll    String
+  classId String
+  class   Classroom   @relation(fields: [classId], references: [id])
+  roomId  String?
+  room    HostelRoom? @relation(fields: [roomId], references: [id])
+}
+
+// Every master-data edit is proposed here by the Database Manager
+// and only takes effect once the AO approves it.
+model PendingChange {
+  id             String   @id @default(cuid())
+  type           String // add_student | edit_student | delete_student | add_room | add_class | assign_warden | assign_do | assign_teacher | assign_lai | activate_staff
+  summary        String
+  payload        Json
+  requestedById  String
+  requestedBy    User     @relation(fields: [requestedById], references: [id])
+  status         String   @default("pending") // pending | approved | rejected
+  reason         String?
+  createdAt      DateTime @default(now())
+}
+
+// One row per class per day. Each approval stage is stored as a small
+// {by, byName, at} JSON blob, or null if not yet done.
+model AttendanceRecord {
+  id                  String    @id @default(cuid())
+  date                String // YYYY-MM-DD
+  classId             String
+  class               Classroom @relation(fields: [classId], references: [id])
+  headcount           Int?
+  wardenAbsences      Json      @default("{}") // { studentId: {by, byName, at} }
+  laiAbsences         Json      @default("{}")
+  doApproved          Json?
+  teacherApproved     Json?
+  coordinatorApproved Json?
+  aoApproved          Json?
+  forcedPublish       Boolean   @default(false)
+  skippedStages       Json      @default("[]")
+
+  @@unique([date, classId])
+}
