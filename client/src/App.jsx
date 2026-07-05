@@ -241,6 +241,10 @@ export default function App() {
 
   const logout = () => { api.clearToken(); setMe(null); setState(null); };
 
+  // Which sidebar tabs a person sees depends entirely on their role. Roles
+  // not listed here (there are none currently) would just get an empty
+  // sidebar — see the `tabs.length > 1` check below, which hides the
+  // sidebar completely for single-tab roles like Warden or LAI.
   const ROLE_TABS = {
     PRINCIPAL: [{ id: "dashboard", label: "Daily report", icon: LayoutDashboard }],
     AO: [
@@ -269,10 +273,14 @@ export default function App() {
     LAI: [{ id: "lai", label: "Mark absentees", icon: GraduationCap }],
   };
   const tabs = ROLE_TABS[me.role] || [];
+  // If nothing is selected yet, or the previously-selected tab doesn't
+  // belong to this role (e.g. right after logging in as someone new),
+  // default to that role's first tab.
   const activeTab = tab && tabs.find((t) => t.id === tab) ? tab : tabs[0]?.id;
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
+      {/* Top bar: app name/date on the left, who's logged in + logout on the right */}
       <div className="sticky top-0 z-10 border-b border-slate-200 bg-[#0d2438] px-5 py-3 text-white">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -292,6 +300,7 @@ export default function App() {
       </div>
 
       <div className="flex flex-col gap-5 p-5 md:flex-row">
+        {/* Sidebar — only shown when a role has more than one screen to choose from */}
         {tabs.length > 1 && (
           <div className="flex shrink-0 gap-2 overflow-x-auto md:w-56 md:flex-col md:overflow-visible">
             {tabs.map((t) => (
@@ -306,6 +315,11 @@ export default function App() {
           {!state ? (
             <div className="grid h-64 place-items-center text-slate-400"><Loader2 className="animate-spin" size={18} /></div>
           ) : (
+            // This is the entire "router": exactly one of these renders,
+            // chosen by matching `activeTab` against the id strings set up
+            // in ROLE_TABS above. Adding a new screen to the app means:
+            // (1) add its {id, label, icon} to the right role(s) in
+            // ROLE_TABS, (2) add one line here.
             <>
               {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} onCutoff={me.role === "AO" ? () => runAction(() => api.runCutoff(date), "Cutoff run") : null} />}
               {activeTab === "status" && <PrincipalDashboard state={state} date={date} onCutoff={null} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
@@ -327,6 +341,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* Bottom-right success/error pop-up — see showToast above */}
       {toast && <div className="fixed bottom-5 right-5 z-20"><Badge tone={toast.tone}>{toast.msg}</Badge></div>}
     </div>
   );
@@ -413,6 +428,9 @@ function AOHierarchyStatus({ state }) {
   const floorsWithoutDO = state.floors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
   const floorsWithoutTeacher = state.floors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
   const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
+  // One flat list of plain-English gap descriptions, built by combining the
+  // four checks above plus a check for inactive accounts — this is what
+  // gets rendered as the amber warning box below.
   const gaps = [
     ...roomsWithoutWarden.map((r) => `${r.hostel} Room ${r.roomNo} has no Warden`),
     ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
@@ -421,6 +439,10 @@ function AOHierarchyStatus({ state }) {
     ...state.staff.filter((s) => s.active === false).map((s) => `${s.name} (${ROLE_LABELS[s.role]}) isn't activated yet`),
   ];
 
+  // A small local component (defined inside AOHierarchyStatus, so it isn't
+  // reusable elsewhere — fine, since only this screen needs this exact
+  // "role name + count of what they cover" card shape) used four times
+  // below, once per role.
   const Group = ({ label, icon, list, describe }) => (
     <Card className="p-4">
       <p className="mb-3 text-sm font-semibold text-slate-700">{label}</p>
@@ -830,6 +852,8 @@ function WardenScreen({ state, date, me, runAction }) {
     <div>
       <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today \u2014 picking a reason marks a student absent.`} />
 
+      {/* Section 1: persistent "away" students — read-only except for the
+          one "Mark reported" button; nothing here is per-day state */}
       {away.length > 0 && (
         <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
           <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
@@ -844,12 +868,14 @@ function WardenScreen({ state, date, me, runAction }) {
         </Card>
       )}
 
+      {/* Section 2: everyone else, one card per class, grouped so a Warden
+          whose rooms span two classes sees two clearly separated lists */}
       {allStudents.length === 0 && <EmptyNote text="No students assigned to you yet." />}
       <div className="space-y-4">
         {Object.entries(groupBy(present, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
           const r = state.attendance[date]?.[classId] || emptyRecord();
-          const locked = !!r.doApproved;
+          const locked = !!r.doApproved; // DO has approved — freeze this class's card
           const bucket = r.wardenAbsences || {};
           return (
             <Card key={classId} className="p-4">
@@ -859,10 +885,11 @@ function WardenScreen({ state, date, me, runAction }) {
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {list.map((s) => {
-                  const entry = bucket[s.id];
-                  const choosing = pickerFor === s.id;
+                  const entry = bucket[s.id]; // this student's current absence entry, if any
+                  const choosing = pickerFor === s.id; // is their reason-picker open right now?
                   return (
                     <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
+                      {/* Name + the chevron that opens/closes the reason picker below */}
                       <div className="flex items-center justify-between">
                         <div>
                           <span className="font-medium text-slate-700">{s.name}</span>
@@ -874,6 +901,8 @@ function WardenScreen({ state, date, me, runAction }) {
                           </button>
                         )}
                       </div>
+                      {/* Current status line: either "Absent — reason" with a clear (X)
+                          button, or plain "Present" */}
                       {entry ? (
                         <div className="mt-1 flex items-center justify-between text-rose-700">
                           <span>Absent — {entry.reason}</span>
@@ -884,10 +913,13 @@ function WardenScreen({ state, date, me, runAction }) {
                       )}
                       {choosing && !locked && (
                         <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
+                          {/* Ordinary reasons: one-day absence via setAbsence */}
                           {DAILY_REASONS.map((reason) => (
                             <button key={reason} onClick={() => { runAction(() => api.setAbsence(date, classId, s.id, reason)); setPickerFor(null); }}
                               className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">{reason}</button>
                           ))}
+                          {/* "Went home" is different: markAway sets the persistent
+                              flag instead of writing to today's record at all */}
                           <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away \u2014 counted absent until reported back"); setPickerFor(null); }}
                             className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100">{AWAY_REASON}</button>
                         </div>
@@ -905,7 +937,7 @@ function WardenScreen({ state, date, me, runAction }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* LAI: mark absentees, no reason \u2014 DO fills that in after a call */
+/* LAI: mark absentees, no reason — DO fills that in after a call */
 /* ---------------------------------------------------------------- */
 // The LAI's screen — much simpler than the Warden's: just a present/absent
 // toggle with no reason picker, because LAIs never supply a reason (see
@@ -978,11 +1010,15 @@ function DoClassCard({ c, record, date, students, runAction }) {
 
   return (
     <Card className="p-4">
+      {/* Header: class name + a one-word status badge */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium text-slate-800">{c.name}</p>
         {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">{!headcountSaved ? "Enter headcount to continue" : "Needs reason verification"}</Badge>}
       </div>
 
+      {/* Step 1 of 3: headcount. The Save button only appears once you've
+          typed something different from what's already stored, so it
+          doesn't just sit there doing nothing on every render. */}
       <Field label="Headcount present">
         <div className="flex gap-2">
           <input type="number" min="0" disabled={approved} className={`${inputCls} w-28`} value={headcount} onChange={(e) => setHeadcount(e.target.value)} />
@@ -992,10 +1028,14 @@ function DoClassCard({ c, record, date, students, runAction }) {
         </div>
       </Field>
 
+      {/* Everything below is hidden until headcount is saved — this is the
+          "headcount first, then the list" ordering from the workflow. */}
       {!headcountSaved ? (
         <p className="mt-3 text-sm text-slate-400">The absentee list appears once you save today's headcount.</p>
       ) : (
         <>
+          {/* Step 2a: students already "away" — shown for context (they count
+              toward the absent total) but need no verification here */}
           {away.length > 0 && (
             <div className="mt-3">
               <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Already away — no action needed</p>
@@ -1009,6 +1049,9 @@ function DoClassCard({ c, record, date, students, runAction }) {
             </div>
           )}
 
+          {/* Step 2b: today's fresh absentees — the actual work. Each gets a
+              row of reason buttons; clicking one calls saveReason immediately
+              (no separate "save" step, unlike the headcount field above). */}
           {list.length === 0 ? (
             <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
           ) : (
@@ -1035,6 +1078,10 @@ function DoClassCard({ c, record, date, students, runAction }) {
             </div>
           )}
 
+          {/* Step 3: approve. Disabled until every fresh absentee has a
+              verified reason — `allVerified` is recalculated on every
+              render, so this enables itself the instant the last one is
+              confirmed, with no extra wiring needed. */}
           <div className="mt-4">
             <Btn variant="success" disabled={approved || !allVerified} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
               <CheckCircle2 size={14} /> {allVerified ? "Approve list" : "Verify all reasons first"}

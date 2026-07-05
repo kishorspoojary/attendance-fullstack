@@ -21,7 +21,7 @@ async function assertOwnedByWarden(req, res) {
 }
 
 // Warden marks a student as having gone home. They'll count as absent
-// automatically every day \u2014 no re-marking needed \u2014 until reported back.
+// automatically every day — no re-marking needed — until reported back.
 studentsRouter.post("/students/:id/mark-away", requireAuth, requireRole("WARDEN"), async (req, res) => {
   const student = await assertOwnedByWarden(req, res);
   if (!student) return; // assertOwnedByWarden already sent the error response

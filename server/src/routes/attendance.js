@@ -74,7 +74,7 @@ attendanceRouter.post(
 
     const field = req.user.role === "WARDEN" ? "wardenAbsences" : "laiAbsences";
     const bucket = { ...(record[field] || {}) }; // copy so we don't mutate the object Prisma gave us
-    // LAI never supplies a reason \u2014 the DO enters it after a phone call.
+    // LAI never supplies a reason — the DO enters it after a phone call.
     const effectiveReason = req.user.role === "LAI" ? null : reason || null;
     if (!effectiveReason) delete bucket[studentId]; // no reason = mark present again
     else bucket[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs(), reason: effectiveReason };
