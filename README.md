@@ -11,11 +11,11 @@ attendance-fullstack/
   client/   React + Vite frontend
 ```
 
-**New to this codebase?** Read [`HOW_IT_WORKS.md`](./HOW_IT_WORKS.md) first —
-it explains how the frontend, backend, and database talk to each other,
-walks through one full click-to-database example, and links out to a
-suggested reading order. Every file also has comments explaining what it
-does and why, written for someone learning as they go.
+**New to this codebase?** Every file has comments explaining what it does
+and why, written for someone learning as they go — start with
+`server/src/routes/attendance.js` and `client/src/App.jsx`, the two most
+representative files. A separate learning manual (concepts, diagrams, and a
+full walkthrough) is kept outside this repo for personal reference.
 
 
 ## 1. Run it locally

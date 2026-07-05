@@ -15,9 +15,7 @@
 // New to React? A "component" is just a function that returns JSX (the
 // HTML-looking syntax below) describing what to render. `useState` gives a
 // component memory that survives between re-renders; calling its setter
-// function schedules React to redraw. See ../../HOW_IT_WORKS.md for a fuller
-// walkthrough with a step-by-step example of what happens when you click a
-// button in this app.
+// function schedules React to redraw.
 // ============================================================================
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -31,7 +29,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10); // "2026-07-04" st
 
 // The four approval stages, in order, mirrored from server/src/stages.js.
 // (Duplicated rather than imported because the frontend and backend are
-// separate projects that don't share code — see HOW_IT_WORKS.md, section 1.)
+// separate projects that don't share code.)
 const STAGES = [
   { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
   { key: "teacherApproved", label: "Teacher approved", pendingLabel: "Incharge Teacher" },
