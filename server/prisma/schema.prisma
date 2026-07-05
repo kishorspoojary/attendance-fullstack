@@ -23,8 +23,13 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Migrations (prisma migrate, prisma db push) use this instead of the
+  // pooled url above. Neon's pooler doesn't support the long-running,
+  // multi-statement operations a migration needs, and will drop the
+  // connection mid-way — see server/.env.example for where this comes from.
+  directUrl = env("DIRECT_URL")
 }
 
 // The eight roles from the workflow. Prisma "enums" restrict a field to a

@@ -22,19 +22,26 @@ full walkthrough) is kept outside this repo for personal reference.
 
 ### 1.1 Get a free database
 Create a free Postgres database at **[neon.tech](https://neon.tech)** or
-**[supabase.com](https://supabase.com)** and copy its connection string
-(looks like `postgresql://user:pass@host/db?sslmode=require`).
+**[supabase.com](https://supabase.com)**. Both give you two versions of the
+connection string — a pooled one and a direct one (see `server/.env.example`
+for exactly where to find each one and why you need both).
 
 ### 1.2 Backend
 ```bash
 cd server
 cp .env.example .env
-# paste your DATABASE_URL into .env, and set a random JWT_SECRET
+# paste your DATABASE_URL (pooled) and DIRECT_URL (direct) into .env, and set a random JWT_SECRET
 npm install
 npx prisma migrate dev --name init
 npm run seed          # creates demo users, students, rooms, classes
 npm run dev           # API on http://localhost:4000
 ```
+If `prisma migrate dev` fails with `P1001: Can't reach database server`,
+the database was just asleep (Neon/Supabase free tiers pause when idle) —
+simply run the same command again. If it instead fails partway through with
+`P3016` / `P1017` after you confirm a schema reset, double-check `DIRECT_URL`
+is actually the non-pooled string (no `-pooler` in the hostname) — using the
+pooled string for both variables is the most common cause of that one.
 
 ### 1.3 Frontend
 ```bash
@@ -85,9 +92,9 @@ A simple free setup: **Neon** (database, already set up in step 1.1) +
 2. Root directory: `server`
 3. Build command: `npm install && npx prisma migrate deploy && npx prisma generate`
 4. Start command: `npm start`
-5. Add environment variables: `DATABASE_URL` (your Neon string), `JWT_SECRET`
-   (any long random string), `CORS_ORIGIN` (your Vercel URL — you can add
-   this after step 3.2).
+5. Add environment variables: `DATABASE_URL` and `DIRECT_URL` (same pooled/
+   direct pair from your local `.env`), `JWT_SECRET` (any long random
+   string), `CORS_ORIGIN` (your Vercel URL — you can add this after step 3.2).
 6. Deploy. Once it's live, run the seed once from Render's **Shell** tab:
    `npm run seed`.
 
