@@ -5,8 +5,6 @@
 // /staff, etc., each paginated. We deliberately didn't, because at the
 // scale of one school/college, fetching everything in one call and letting
 // the frontend filter it in memory is simpler to build and reason about.
-// If the student count grew into the tens of thousands, this is the first
-// place you'd revisit.
 // ============================================================================
 import { Router } from "express";
 import { prisma } from "../db.js";
@@ -15,12 +13,12 @@ import { requireAuth, publicUser } from "../auth.js";
 export const stateRouter = Router();
 
 stateRouter.get("/state", requireAuth, async (req, res) => {
-  // Promise.all runs all six queries concurrently instead of one after
-  // another — they don't depend on each other, so there's no reason to wait.
-  const [floors, classes, hostelRooms, students, staff, pendingChanges, attendanceRows] = await Promise.all([
-    prisma.floor.findMany(),
-    prisma.classroom.findMany(),
+  const [hostels, hostelFloors, hostelRooms, collegeFloors, classes, students, staff, pendingChanges, attendanceRows] = await Promise.all([
+    prisma.hostel.findMany(),
+    prisma.hostelFloor.findMany(),
     prisma.hostelRoom.findMany(),
+    prisma.collegeFloor.findMany(),
+    prisma.classroom.findMany(),
     prisma.student.findMany(),
     prisma.user.findMany(),
     prisma.pendingChange.findMany({ orderBy: { createdAt: "desc" } }),
@@ -36,9 +34,11 @@ stateRouter.get("/state", requireAuth, async (req, res) => {
   }
 
   res.json({
-    floors,
-    classes,
+    hostels,
+    hostelFloors,
     hostelRooms,
+    collegeFloors,
+    classes,
     students,
     staff: staff.map(publicUser), // strip password hashes before this ever reaches the browser
     pendingChanges,

@@ -2,15 +2,14 @@
 // What actually happens when an AO approves a PendingChange.
 //
 // The Database Manager never edits the real tables directly — every action
-// (add a student, assign a Warden, etc.) first creates a PendingChange row
-// with status "pending" (see routes/changes.js: POST /changes). Only once an
-// AO approves it does this file run, translating the change's `type` and
+// (add a student, create a staff account, etc.) first creates a
+// PendingChange row with status "pending" (see routes/changes.js). Only once
+// an AO approves it does this file run, translating the change's `type` and
 // `payload` into a real write against the actual tables.
-//
-// Keeping this translation in one place (rather than scattered across
-// routes) makes it easy to see, for any given change type, exactly what
-// "approved" is going to do to the database.
 // ============================================================================
+import bcrypt from "bcryptjs";
+import { DEFAULT_PASSWORD } from "./constants.js";
+
 export async function applyChange(prisma, change) {
   const p = change.payload; // the data the Database Manager submitted, shape depends on change.type
 
@@ -21,10 +20,16 @@ export async function applyChange(prisma, change) {
       });
       break;
 
+    // One Excel upload becomes one PendingChange with an array of rows,
+    // rather than one PendingChange per student — otherwise a 200-row
+    // spreadsheet would mean 200 separate things for an AO to click through.
+    case "bulk_add_students":
+      await prisma.student.createMany({
+        data: p.students.map((s) => ({ name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null })),
+      });
+      break;
+
     case "edit_student":
-      // Only include fields the request actually wants to change — this
-      // spread trick builds an object like { name: "New Name" } and skips
-      // any key whose value is undefined, so untouched fields are left alone.
       await prisma.student.update({
         where: { id: p.studentId },
         data: {
@@ -40,14 +45,24 @@ export async function applyChange(prisma, change) {
       await prisma.student.delete({ where: { id: p.studentId } });
       break;
 
+    case "add_hostel":
+      await prisma.hostel.create({ data: { name: p.name } });
+      break;
+
+    case "add_hostel_floor":
+      await prisma.hostelFloor.create({ data: { name: p.name, hostelId: p.hostelId } });
+      break;
+
     case "add_room":
-      await prisma.hostelRoom.create({
-        data: { hostel: p.hostel, roomNo: p.roomNo, floorId: p.floorId },
-      });
+      await prisma.hostelRoom.create({ data: { roomNo: p.roomNo, hostelFloorId: p.hostelFloorId } });
+      break;
+
+    case "add_college_floor":
+      await prisma.collegeFloor.create({ data: { name: p.name } });
       break;
 
     case "add_class":
-      await prisma.classroom.create({ data: { name: p.name, floorId: p.floorId } });
+      await prisma.classroom.create({ data: { name: p.name, collegeFloorId: p.collegeFloorId } });
       break;
 
     case "assign_warden":
@@ -58,8 +73,8 @@ export async function applyChange(prisma, change) {
 
     case "assign_do":
     case "assign_teacher":
-      // DOs and Incharge Teachers are "pooled" per floor — several staff can
-      // share the same floorIds, and any one of them can act on a class there.
+      // DOs and Incharge Teachers are "pooled" per CollegeFloor — several
+      // staff can share the same floorIds, and any one of them can act.
       await prisma.user.update({ where: { id: p.staffId }, data: { floorIds: p.floorIds } });
       break;
 
@@ -67,13 +82,27 @@ export async function applyChange(prisma, change) {
       await prisma.user.update({ where: { id: p.staffId }, data: { classIds: p.classIds } });
       break;
 
-    case "activate_staff":
-      // Field-staff accounts (Warden/DO/Teacher/LAI) start locked (active:
-      // false) until the Database Manager requests activation and the AO
-      // approves it — see routes/index.js's login check for the other half
-      // of this rule.
-      await prisma.user.update({ where: { id: p.staffId }, data: { active: true } });
+    // Creates a brand-new Warden/LAI/DO/Incharge Teacher account. The login
+    // key was already generated back when the Database Manager proposed
+    // this (see routes/changes.js) — never here, so the same key that was
+    // shown then is the one that actually ends up on the account.
+    case "create_staff": {
+      const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+      await prisma.user.create({
+        data: {
+          name: p.name,
+          role: p.role,
+          loginKey: p.loginKey,
+          passwordHash,
+          status: "ACTIVE",
+          mustChangePassword: true,
+          roomIds: p.roomIds || [],
+          floorIds: p.floorIds || [],
+          classIds: p.classIds || [],
+        },
+      });
       break;
+    }
 
     default:
       // Should never happen unless the frontend sends a type we don't

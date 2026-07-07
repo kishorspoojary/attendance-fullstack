@@ -1,65 +1,41 @@
 // ============================================================================
-// Fills an empty database with realistic sample data — one floor, two
-// classes, four hostel rooms, all eight roles, and twelve students — so you
-// have something to click around in the moment you first run the app.
+// Optional starter data: one hostel (with a floor and rooms), one college
+// floor (with two classes), and a dozen students — so there's something to
+// actually test the daily attendance workflow against.
 //
-// Run it with `npm run seed`. It's safe to run once on a fresh database;
-// running it twice will fail (or duplicate data) since it always creates
-// new rows rather than checking what already exists — this is a seed
-// script for getting started, not a repeatable migration.
+// Deliberately creates NO user accounts. Every account in this app now
+// comes from the real onboarding flow instead:
+//   1. Register as Principal (POST /api/auth/register-principal, or the
+//      app's own registration screen).
+//   2. Log in as Principal and create the AO / Coordinator / Database
+//      Manager accounts ("activate the system").
+//   3. Log in as Database Manager, create Warden / LAI / DO / Incharge
+//      Teacher accounts — each needs AO approval before it can log in.
+// Seeding fake users would just let you skip testing that real flow, which
+// defeats the point of building it. Run this script (`npm run seed`) any
+// time after step 3 above, once you have a Database Manager account, to
+// avoid manually creating a dozen students by hand while you're testing.
 // ============================================================================
 import "dotenv/config";
-import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
-// This file talks to Prisma directly rather than importing the shared
-// `prisma` from db.js, since it's a one-off script run from the command
-// line, not part of the running server.
 const prisma = new PrismaClient();
-const DEMO_PASSWORD = "password123"; // every seeded account shares this, for convenience
 
 async function main() {
-  console.log("Seeding demo data...");
-  // Every account gets the SAME hash of the SAME password — bcrypt.hash is
-  // slow on purpose (it's designed to resist brute-forcing), so we only
-  // compute it once and reuse it below instead of once per user.
-  const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
+  console.log("Seeding starter hostel/college structure and students...");
 
-  const floor1 = await prisma.floor.create({ data: { name: "Academic Floor 1" } });
-
-  const class10A = await prisma.classroom.create({ data: { name: "Class 10-A", floorId: floor1.id } });
-  const class10B = await prisma.classroom.create({ data: { name: "Class 10-B", floorId: floor1.id } });
+  const hostel = await prisma.hostel.create({ data: { name: "Hostel Block A" } });
+  const hostelFloor1 = await prisma.hostelFloor.create({ data: { name: "Hostel Floor 1", hostelId: hostel.id } });
 
   const rooms = {};
   for (const roomNo of ["101", "102", "103", "104"]) {
-    rooms[roomNo] = await prisma.hostelRoom.create({ data: { hostel: "Hostel Block A", roomNo, floorId: floor1.id } });
+    rooms[roomNo] = await prisma.hostelRoom.create({ data: { roomNo, hostelFloorId: hostelFloor1.id } });
   }
 
-  // One user per role, demonstrating the "pooled" assignment model: both
-  // do1/do2 and teacher1/teacher2 share the exact same floorIds, so either
-  // one can act on any class on that floor. teacher3 is deliberately left
-  // inactive to show what a locked-out login looks like.
-  await prisma.user.createMany({
-    data: [
-      { username: "principal", name: "Dr. Rao", role: "PRINCIPAL", passwordHash },
-      { username: "ao", name: "Meera Nair", role: "AO", passwordHash },
-      { username: "coordinator", name: "Arjun Iyer", role: "COORDINATOR", passwordHash },
-      { username: "dbm", name: "Suresh Kumar", role: "DB_MANAGER", passwordHash },
-      { username: "warden1", name: "Latha", role: "WARDEN", passwordHash, roomIds: [rooms["101"].id, rooms["102"].id, rooms["103"].id] },
-      { username: "warden2", name: "Kumar", role: "WARDEN", passwordHash, roomIds: [rooms["104"].id] },
-      { username: "do1", name: "Priya", role: "DO", passwordHash, floorIds: [floor1.id] },
-      { username: "do2", name: "Vikram", role: "DO", passwordHash, floorIds: [floor1.id] },
-      { username: "teacher1", name: "Anita", role: "INCHARGE_TEACHER", passwordHash, floorIds: [floor1.id] },
-      { username: "teacher2", name: "Rakesh", role: "INCHARGE_TEACHER", passwordHash, floorIds: [floor1.id] },
-      { username: "teacher3", name: "Divya", role: "INCHARGE_TEACHER", passwordHash, floorIds: [floor1.id], active: false },
-      { username: "lai1", name: "Sneha", role: "LAI", passwordHash, classIds: [class10A.id] },
-      { username: "lai2", name: "Farha", role: "LAI", passwordHash, classIds: [class10B.id] },
-    ],
-  });
+  const collegeFloor1 = await prisma.collegeFloor.create({ data: { name: "Academic Floor 1" } });
+  const class10A = await prisma.classroom.create({ data: { name: "Class 10-A", collegeFloorId: collegeFloor1.id } });
+  const class10B = await prisma.classroom.create({ data: { name: "Class 10-B", collegeFloorId: collegeFloor1.id } });
 
-  // A plain array of tuples is just a compact way to write out twelve rows
-  // by hand — the .map() below turns each tuple into the object shape
-  // Prisma actually wants.
   const students = [
     ["Rahul Verma", "10A-01", class10A.id, rooms["101"].id],
     ["Sanjay Gupta", "10A-02", class10A.id, rooms["101"].id],
@@ -78,15 +54,8 @@ async function main() {
     data: students.map(([name, roll, classId, roomId]) => ({ name, roll, classId, roomId })),
   });
 
-  // Demo: one student already marked "away" so the persistent-absence
-  // feature has something to show on first login.
-  const rahul = await prisma.student.findFirst({ where: { roll: "10A-01" } });
-  if (rahul) {
-    await prisma.student.update({ where: { id: rahul.id }, data: { awayReason: "Went home", awaySince: new Date().toISOString().slice(0, 10) } });
-  }
-
-  console.log("Done. Every demo account's password is:", DEMO_PASSWORD);
-  console.log("Usernames: principal, ao, coordinator, dbm, warden1, warden2, do1, do2, teacher1, teacher2, teacher3 (inactive), lai1, lai2");
+  console.log("Done. Created: 1 hostel, 1 hostel floor, 4 rooms, 1 college floor, 2 classes, 12 students.");
+  console.log("Next: register as Principal, create leadership accounts, then create/approve staff accounts to actually log in as anyone.");
 }
 
 main()
