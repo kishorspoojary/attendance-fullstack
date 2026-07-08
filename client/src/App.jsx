@@ -1,76 +1,93 @@
 // ============================================================================
-// The entire frontend lives in this one file, organized top-to-bottom as:
+// The entire user interface — one login/registration flow, then one screen
+// per role. New to React? A "component" is just a function that returns
+// JSX (the HTML-looking syntax below) describing what to render. `useState`
+// gives a component memory that survives between re-renders; calling its
+// setter function schedules React to redraw.
 //
-//   1. Small helper functions and constants (STAGES, recordTag, etc.) — pure
-//      JavaScript, no React, used by many components below.
-//   2. "UI atoms" — tiny reusable pieces (Badge, Card, Btn, Field...) that
-//      every screen is built out of, so the whole app looks consistent.
-//   3. Login — shown instead of everything else until you're logged in.
-//   4. App — the top-level component. It loads data once, decides which
-//      screen to show based on your role, and passes a `runAction` helper
-//      down to everyone so any button can call the API and refresh.
-//   5. One component per screen (WardenScreen, DOScreen, AOApprovals, ...),
-//      each corresponding to one tab in the sidebar.
+// How data flows through this file, top to bottom:
+//   App() holds the one source of truth: `state` (the whole backend
+//   snapshot from api.getState()) and `me` (who's logged in). Every screen
+//   below receives slices of that as props and calls `runAction` to make a
+//   change — runAction always does the same three things: call the API,
+//   re-fetch the whole snapshot, show a toast. See runAction's own comment
+//   in App() for why it's built that way.
 //
-// New to React? A "component" is just a function that returns JSX (the
-// HTML-looking syntax below) describing what to render. `useState` gives a
-// component memory that survives between re-renders; calling its setter
-// function schedules React to redraw.
+// Rough map of this file, in order:
+//   1. Shared constants (STAGES, labels, date formatting)
+//   2. Small reusable UI pieces (Card, Badge, Btn, Field, Select...)
+//   3. Login / Registration / mandatory password-change screens
+//   4. App() — the top-level component and its role-based router
+//   5. One component per screen, grouped by who uses it
 // ============================================================================
 import { useState, useEffect, useCallback } from "react";
 import {
-  Building2, ClipboardCheck, ShieldCheck, GraduationCap, Bed, UserCog, ListChecks,
-  Clock, CheckCircle2, XCircle, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
+  ClipboardCheck, ShieldCheck, GraduationCap, Bed, UserCog, ListChecks,
+  Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
+  Undo2, Search, UserPlus, Snowflake, KeyRound, Building2,
 } from "lucide-react";
-import { api } from "./api.js"; // the only place that actually talks to the backend
+import { api } from "./api.js";
 
-const todayStr = () => new Date().toISOString().slice(0, 10); // "2026-07-04" style date, used as the default day everywhere
+/* ---------------------------------------------------------------- */
+/* 1. Shared constants                                                */
+/* ---------------------------------------------------------------- */
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
-// The four approval stages, in order, mirrored from server/src/stages.js.
+// The three approval stages, in order, mirrored from server/src/stages.js.
 // (Duplicated rather than imported because the frontend and backend are
-// separate projects that don't share code.)
+// separate projects that don't share code.) AO does not approve daily
+// attendance — Coordinator is the last human stage.
 const STAGES = [
   { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
   { key: "teacherApproved", label: "Teacher approved", pendingLabel: "Incharge Teacher" },
   { key: "coordinatorApproved", label: "Coordinator approved", pendingLabel: "Coordinator" },
-  { key: "aoApproved", label: "AO approved", pendingLabel: "AO" },
 ];
-// Given one AttendanceRecord, returns 0 if nothing's approved yet (waiting
-// on the DO), 1 if DO is done but Teacher isn't, ... up to STAGES.length (4)
-// once everything is approved. Used everywhere we need to show progress.
 function currentStageIndex(rec) {
   for (let i = 0; i < STAGES.length; i++) if (!rec[STAGES[i].key]) return i;
   return STAGES.length;
 }
-// Turns a record's raw approval state into a short label + color for a
-// Badge — this is what makes the "Pending — Discipline Officer" /
-// "Verified" / "Auto-passed" text you see in every status table.
+function priorStageKey(stageKey) {
+  const idx = STAGES.findIndex((s) => s.key === stageKey);
+  return idx > 0 ? STAGES[idx - 1].key : null;
+}
 function recordTag(rec) {
   const idx = currentStageIndex(rec);
   const published = idx === STAGES.length || rec.forcedPublish;
-  if (!published) return { label: `Pending \u2014 ${STAGES[idx].pendingLabel}`, tone: "amber" };
+  if (!published) return { label: `Pending — ${STAGES[idx].pendingLabel}`, tone: "amber" };
   if (idx === STAGES.length) return { label: "Verified", tone: "emerald" };
   const missing = STAGES.slice(idx).map((s) => s.pendingLabel).join(", ");
-  return { label: `Auto-passed \u2014 missing: ${missing}`, tone: "rose" };
+  return { label: `Auto-passed — missing: ${missing}`, tone: "rose" };
 }
-// A record's default shape before anything has happened for a class/day.
-// Used so the UI never has to special-case "there's no record yet" —
-// components can always assume every field exists, just empty/null.
 function emptyRecord() {
-  return { wardenAbsences: {}, laiAbsences: {}, headcount: null, doApproved: null, teacherApproved: null, coordinatorApproved: null, aoApproved: null, forcedPublish: false, skippedStages: [] };
+  return {
+    wardenAbsences: {}, laiAbsences: {}, headcount: null, doVerified: {},
+    doApproved: null, teacherApproved: null, coordinatorApproved: null,
+    forcedPublish: false, skippedStages: [], sentBack: null,
+  };
 }
 
 const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
 };
-const DAILY_REASONS = ["Sick", "Not in room", "Other"]; // reasons that only apply to today
-const AWAY_REASON = "Went home"; // the one reason that persists across days — see WardenScreen below
+const DAILY_REASONS = ["Sick", "Not in room", "Other"];
+const AWAY_REASON = "Went home";
+
+// Every date shown as text (not inside a native <input type="date">, which
+// renders however the browser/OS prefers) uses this dd/mm/yyyy format,
+// per the requirement that dates display that way everywhere.
+function formatDMY(isoDate) {
+  if (!isoDate) return "—";
+  const [y, m, d] = isoDate.slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
+}
+function formatTime(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 
 /* ---------------------------------------------------------------- */
-/* UI atoms — small, reusable, no business logic of their own.       */
-/* Every screen further down is built by combining these.            */
+/* 2. Small reusable UI pieces                                        */
 /* ---------------------------------------------------------------- */
 const TONES = {
   slate: "bg-slate-100 text-slate-600 border-slate-200",
@@ -105,7 +122,7 @@ function Btn({ children, onClick, variant = "primary", disabled, size = "md" }) 
     ghost: "bg-slate-100 text-slate-700 hover:bg-slate-200",
     outline: "border border-slate-300 text-slate-700 hover:bg-slate-50",
   };
-  return <button className={`${base} ${sizes} ${variants[variant]}`} onClick={onClick} disabled={disabled}>{children}</button>;
+  return <button className={`${base} ${sizes} ${variants[variant]} w-full sm:w-auto`} onClick={onClick} disabled={disabled}>{children}</button>;
 }
 function Field({ label, children }) {
   return <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">{label}</span>{children}</label>;
@@ -125,13 +142,78 @@ function EmptyNote({ text }) {
 function groupBy(arr, fn) {
   return arr.reduce((acc, item) => { const k = fn(item); (acc[k] = acc[k] || []).push(item); return acc; }, {});
 }
+// A plain search box used on the screens with long student lists (Warden,
+// LAI, Database Manager) — filtering happens client-side in each screen,
+// this component just renders the input.
+function SearchBox({ value, onChange, placeholder }) {
+  return (
+    <div className="relative mb-3">
+      <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder || "Search..."} className={`${inputCls} pl-8`} />
+    </div>
+  );
+}
+// Shown wherever a record carries an unresolved send-back aimed at the
+// person viewing it — see attendance.js's /send-back route.
+function SentBackBanner({ record }) {
+  if (!record.sentBack) return null;
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+      <Undo2 size={15} className="mt-0.5 shrink-0" />
+      <div><span className="font-medium">Sent back by {record.sentBack.fromName}:</span> {record.sentBack.reason}</div>
+    </div>
+  );
+}
+// A small inline "type a reason, then confirm" control used for send-back
+// buttons everywhere, so it doesn't need its own modal component.
+function SendBackButton({ onSend }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  if (!open) return <Btn size="sm" variant="outline" onClick={() => setOpen(true)}><Undo2 size={13} /> Send back</Btn>;
+  return (
+    <div className="flex w-full flex-col gap-2 sm:w-64">
+      <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being sent back?" className={inputCls} />
+      <div className="flex gap-2">
+        <Btn size="sm" variant="danger" disabled={!reason.trim()} onClick={() => { onSend(reason.trim()); setOpen(false); setReason(""); }}>Confirm send back</Btn>
+        <Btn size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+      </div>
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------- */
+/* 3. Login, Registration, and mandatory password change              */
 /* ---------------------------------------------------------------- */
-/* Login screen — shown instead of everything else until logged in.  */
-/* ---------------------------------------------------------------- */
-function Login({ onLoggedIn }) {
-  const [username, setUsername] = useState("");
+
+// Shown before anyone's logged in. Defaults to the login form; a small
+// link flips to registration for the one-time "first person to ever use
+// this app" bootstrap. If someone mistakenly tries to register when a
+// Principal already exists, the server just rejects it with a clear
+// message — no separate check is needed here to decide which to show.
+function AuthScreen({ onLoggedIn }) {
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  return (
+    <div className="grid min-h-screen place-items-center bg-slate-50 px-4" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
+      <div className="w-full max-w-sm">
+        <div className="mb-5 flex items-center gap-2.5 px-1">
+          <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#12324D] text-white"><ClipboardCheck size={17} /></div>
+          <div className="font-display text-base font-semibold text-slate-900">Attendance & Hostel System</div>
+        </div>
+        {mode === "login" ? <LoginForm onLoggedIn={onLoggedIn} /> : <RegisterForm onLoggedIn={onLoggedIn} />}
+        <p className="mt-4 text-center text-xs text-slate-400">
+          {mode === "login" ? (
+            <>First time setting up this app? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("register")}>Register as Principal</button></>
+          ) : (
+            <>Already set up? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("login")}>Log in instead</button></>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LoginForm({ onLoggedIn }) {
+  const [loginKey, setLoginKey] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -139,11 +221,102 @@ function Login({ onLoggedIn }) {
   const submit = async () => {
     setError(""); setBusy(true);
     try {
-      const { token, user } = await api.login(username, password);
-      api.setToken(token); // saved to localStorage so a page refresh doesn't log you out
+      const { token, user } = await api.login(loginKey.trim(), password);
+      api.setToken(token);
       onLoggedIn(user);
     } catch (e) {
-      setError(e.message); // the exact message the server sent, e.g. "Incorrect username or password"
+      setError(e.message);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Card className="p-6">
+      <div className="space-y-3">
+        <Field label="4-digit login key">
+          <input className={inputCls} value={loginKey} maxLength={4} inputMode="numeric"
+            onChange={(e) => setLoginKey(e.target.value.replace(/\D/g, ""))}
+            onKeyDown={(e) => e.key === "Enter" && submit()} autoFocus placeholder="e.g. 4821" />
+        </Field>
+        <Field label="Password">
+          <input type="password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+        </Field>
+      </div>
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      <div className="mt-4"><Btn onClick={submit} disabled={busy} variant="primary">{busy ? <Loader2 className="animate-spin" size={14} /> : <LogIn size={14} />} Log in</Btn></div>
+    </Card>
+  );
+}
+
+function RegisterForm({ onLoggedIn }) {
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState(null);
+
+  const submit = async () => {
+    setError("");
+    if (!name.trim()) return setError("Enter your name");
+    if (password.length < 6) return setError("Password must be at least 6 characters");
+    if (password !== confirm) return setError("Passwords don't match");
+    setBusy(true);
+    try {
+      const { token, user } = await api.registerPrincipal(name.trim(), password);
+      api.setToken(token);
+      setCreated(user);
+      setTimeout(() => onLoggedIn(user), 1200);
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
+  };
+
+  if (created) {
+    return (
+      <Card className="p-6 text-center">
+        <CheckCircle2 className="mx-auto mb-2 text-emerald-600" size={28} />
+        <p className="font-medium text-slate-800">Registered! Your login key is <span className="font-display text-lg">{created.loginKey}</span></p>
+        <p className="mt-1 text-xs text-slate-500">Write this down — you'll use it (with your password) to log in from now on. Taking you in...</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-6">
+      <p className="mb-3 text-sm text-slate-500">This one-time step creates the Principal account. Every other account is created from inside the app after this.</p>
+      <div className="space-y-3">
+        <Field label="Your name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+        <Field label="Choose a password"><input type="password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+        <Field label="Confirm password"><input type="password" className={inputCls} value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} /></Field>
+      </div>
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      <div className="mt-4"><Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <UserPlus size={14} />} Register as Principal</Btn></div>
+    </Card>
+  );
+}
+
+// Blocks the rest of the app until a mandatory password change is done.
+// Shown whenever me.mustChangePassword is true — true for every account
+// until the person swaps out the shared default password for their own.
+function ChangePasswordGate({ onDone, onLogout }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (newPassword.length < 6) return setError("New password must be at least 6 characters");
+    if (newPassword !== confirm) return setError("Passwords don't match");
+    setBusy(true);
+    try {
+      await api.changePassword(currentPassword, newPassword);
+      onDone();
+    } catch (e) {
+      setError(e.message);
     }
     setBusy(false);
   };
@@ -151,62 +324,60 @@ function Login({ onLoggedIn }) {
   return (
     <div className="grid min-h-screen place-items-center bg-slate-50 px-4" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
       <Card className="w-full max-w-sm p-6">
-        <div className="mb-5 flex items-center gap-2.5">
-          <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#12324D] text-white"><ClipboardCheck size={17} /></div>
-          <div className="font-display text-base font-semibold text-slate-900">Attendance & Hostel System</div>
+        <div className="mb-4 flex items-center gap-2.5">
+          <div className="grid h-9 w-9 place-items-center rounded-xl bg-amber-100 text-amber-700"><KeyRound size={17} /></div>
+          <div>
+            <p className="font-display text-base font-semibold text-slate-900">Set your own password</p>
+            <p className="text-xs text-slate-500">You're still on the shared starting password — choose your own before continuing.</p>
+          </div>
         </div>
         <div className="space-y-3">
-          <Field label="Username">
-            <input className={inputCls} value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} autoFocus />
-          </Field>
-          <Field label="Password">
-            <input type="password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
-          </Field>
+          <Field label="Current password"><input type="password" className={inputCls} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoFocus /></Field>
+          <Field label="New password"><input type="password" className={inputCls} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></Field>
+          <Field label="Confirm new password"><input type="password" className={inputCls} value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} /></Field>
         </div>
         {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
-        <Btn onClick={submit} disabled={busy} variant="primary">{busy ? <Loader2 className="animate-spin" size={14} /> : <LogIn size={14} />} Log in</Btn>
-        <p className="mt-4 text-xs text-slate-400">Demo accounts: principal, ao, coordinator, dbm, warden1, warden2, do1, do2, teacher1, teacher2, lai1, lai2 — password for all: <code>password123</code></p>
+        <div className="mt-4 flex gap-2">
+          <Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <KeyRound size={14} />} Set password</Btn>
+          <Btn variant="ghost" onClick={onLogout}>Log out</Btn>
+        </div>
       </Card>
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* App shell — the top-level component. Everything else in this file */
-/* is either rendered by this, or rendered by something this renders. */
+/* 4. App() — top-level component and role-based router               */
 /* ---------------------------------------------------------------- */
 export default function App() {
-  const [state, setState] = useState(null); // the full snapshot from GET /api/state — null until loaded
-  const [me, setMe] = useState(null); // the logged-in user, or null if not logged in
+  const [state, setState] = useState(null);
+  const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [authChecked, setAuthChecked] = useState(false); // have we finished the initial "do we have a saved token?" check
-  const [tab, setTab] = useState(null); // which sidebar tab is active
-  const [toast, setToast] = useState(null); // the little pop-up message in the bottom-right corner
+  const [authChecked, setAuthChecked] = useState(false);
+  const [tab, setTab] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [sessionMessage, setSessionMessage] = useState("");
   const date = todayStr();
 
-  // Re-fetches everything from the server and stores it in `state`. Called
-  // once on page load (below), and again after every single action anyone
-  // takes — see runAction. This "just refetch everything" approach is much
-  // simpler than trying to patch `state` in place after each API call, at
-  // the cost of a bit more network traffic; fine at this app's scale.
+  // The one function every mutation in this app goes through: call the
+  // API, then re-fetch the ENTIRE snapshot (not just patch local state),
+  // so every screen — not just the one you clicked in — reflects the
+  // change. See HOW_IT_WORKS-style comment in api.js for why this is
+  // simpler than trying to keep local state perfectly in sync by hand.
   const refresh = useCallback(async () => {
     try {
       const data = await api.getState();
       setState(data);
       setMe(data.me);
     } catch (e) {
-      // If our saved token turned out to be invalid/expired, drop back to
-      // the login screen instead of showing a broken, empty app.
-      if (String(e.message).toLowerCase().includes("logged in") || String(e.message).toLowerCase().includes("expired")) {
+      if (e.status || /logged in|expired|not active/i.test(e.message)) {
         api.clearToken(); setMe(null);
+        setSessionMessage(e.message);
       }
     }
     setLoading(false);
   }, []);
 
-  // useEffect with an empty-ish dependency array runs once, right after the
-  // component first appears — this is where we check "were we already
-  // logged in from a previous visit?" and load data if so.
   useEffect(() => {
     if (api.hasToken()) refresh();
     else setLoading(false);
@@ -215,18 +386,15 @@ export default function App() {
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 2800); };
 
-  // The single function every button in this app calls. It wraps whatever
-  // API call the button needs to make: run it, refetch the full app state
-  // so everyone's screen is up to date, and show a success or error toast.
-  // Centralizing this means no component has to remember to call refresh()
-  // itself or handle errors individually.
   const runAction = async (fn, successMsg) => {
     try {
-      await fn();
+      const result = await fn();
       await refresh();
       if (successMsg) showToast(successMsg);
+      return result;
     } catch (e) {
-      showToast(e.message, "rose"); // the server's error message, shown directly to the user
+      showToast(e.message, "rose");
+      return null;
     }
   };
 
@@ -234,21 +402,28 @@ export default function App() {
     return <div className="grid min-h-screen place-items-center text-slate-400"><Loader2 className="mr-2 animate-spin" size={18} /> Loading...</div>;
   }
   if (!me) {
-    return <Login onLoggedIn={() => refresh()} />;
+    return (
+      <div>
+        {sessionMessage && <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-800">{sessionMessage}</div>}
+        <AuthScreen onLoggedIn={() => { setSessionMessage(""); refresh(); }} />
+      </div>
+    );
+  }
+  if (me.mustChangePassword) {
+    return <ChangePasswordGate onDone={refresh} onLogout={() => { api.clearToken(); setMe(null); }} />;
   }
 
   const logout = () => { api.clearToken(); setMe(null); setState(null); };
 
-  // Which sidebar tabs a person sees depends entirely on their role. Roles
-  // not listed here (there are none currently) would just get an empty
-  // sidebar — see the `tabs.length > 1` check below, which hides the
-  // sidebar completely for single-tab roles like Warden or LAI.
+  // Which sidebar tabs a person sees depends entirely on their role.
   const ROLE_TABS = {
-    PRINCIPAL: [{ id: "dashboard", label: "Daily report", icon: LayoutDashboard }],
+    PRINCIPAL: [
+      { id: "dashboard", label: "Daily report", icon: LayoutDashboard },
+      { id: "leadership", label: "Leadership accounts", icon: UserPlus },
+    ],
     AO: [
       { id: "approvals", label: "Master data approvals", icon: ShieldCheck },
-      { id: "final", label: "Final attendance approval", icon: ClipboardCheck },
-      { id: "dashboard", label: "Daily report", icon: LayoutDashboard },
+      { id: "freeze", label: "Freeze / unfreeze", icon: Snowflake },
       { id: "hierarchy", label: "Hierarchy status", icon: Users },
     ],
     COORDINATOR: [
@@ -257,9 +432,10 @@ export default function App() {
     ],
     DB_MANAGER: [
       { id: "students", label: "Students", icon: GraduationCap },
-      { id: "rooms", label: "Hostel & classes", icon: Bed },
+      { id: "structure", label: "Hostels & classes", icon: Building2 },
       { id: "assign", label: "Assign staff", icon: UserCog },
-      { id: "activate", label: "Activate accounts", icon: Users },
+      { id: "createstaff", label: "Create staff account", icon: UserPlus },
+      { id: "absentees", label: "View absentees", icon: ClipboardCheck },
       { id: "mychanges", label: "My requests", icon: Clock },
     ],
     WARDEN: [{ id: "warden", label: "Mark absentees", icon: Bed }],
@@ -271,25 +447,22 @@ export default function App() {
     LAI: [{ id: "lai", label: "Mark absentees", icon: GraduationCap }],
   };
   const tabs = ROLE_TABS[me.role] || [];
-  // If nothing is selected yet, or the previously-selected tab doesn't
-  // belong to this role (e.g. right after logging in as someone new),
-  // default to that role's first tab.
   const activeTab = tab && tabs.find((t) => t.id === tab) ? tab : tabs[0]?.id;
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
-      {/* Top bar: app name/date on the left, who's logged in + logout on the right */}
-      <div className="sticky top-0 z-10 border-b border-slate-200 bg-[#0d2438] px-5 py-3 text-white">
+      {/* Top bar */}
+      <div className="sticky top-0 z-10 border-b border-slate-200 bg-[#0d2438] px-4 py-3 text-white sm:px-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="grid h-8 w-8 place-items-center rounded-lg bg-white/10"><ClipboardCheck size={16} /></div>
             <div>
               <div className="font-display text-[15px] font-semibold leading-tight">Attendance & Hostel System</div>
-              <div className="text-[11px] text-white/60">{new Date().toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
+              <div className="text-[11px] text-white/60">{formatDMY(date)}</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-white/70">{me.name} · {ROLE_LABELS[me.role]}</span>
+            <span className="hidden text-xs text-white/70 sm:inline">{me.name} · {ROLE_LABELS[me.role]} · Key {me.loginKey}</span>
             <button onClick={logout} className="flex items-center gap-1 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20">
               <LogOut size={13} /> Log out
             </button>
@@ -297,10 +470,10 @@ export default function App() {
         </div>
       </div>
 
-      <div className="flex flex-col gap-5 p-5 md:flex-row">
-        {/* Sidebar — only shown when a role has more than one screen to choose from */}
+      <div className="flex flex-col gap-4 p-3 sm:gap-5 sm:p-5 md:flex-row">
+        {/* Sidebar — a horizontally-scrolling row on mobile, a column on larger screens */}
         {tabs.length > 1 && (
-          <div className="flex shrink-0 gap-2 overflow-x-auto md:w-56 md:flex-col md:overflow-visible">
+          <div className="flex shrink-0 gap-2 overflow-x-auto pb-1 md:w-56 md:flex-col md:overflow-visible">
             {tabs.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-left text-sm font-medium transition ${activeTab === t.id ? "bg-[#12324D] text-white" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"}`}>
@@ -313,22 +486,21 @@ export default function App() {
           {!state ? (
             <div className="grid h-64 place-items-center text-slate-400"><Loader2 className="animate-spin" size={18} /></div>
           ) : (
-            // This is the entire "router": exactly one of these renders,
-            // chosen by matching `activeTab` against the id strings set up
-            // in ROLE_TABS above. Adding a new screen to the app means:
-            // (1) add its {id, label, icon} to the right role(s) in
-            // ROLE_TABS, (2) add one line here.
+            // The whole "router": exactly one of these renders, chosen by
+            // matching `activeTab` against the id strings in ROLE_TABS above.
             <>
-              {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} onCutoff={me.role === "AO" ? () => runAction(() => api.runCutoff(date), "Cutoff run") : null} />}
-              {activeTab === "status" && <PrincipalDashboard state={state} date={date} onCutoff={null} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
-              {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
+              {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} />}
+              {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
               {activeTab === "approvals" && <AOApprovals state={state} onApprove={(c) => runAction(() => api.approveChange(c.id), "Approved")} onReject={(c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected")} />}
-              {activeTab === "final" && <FinalApproval state={state} date={date} runAction={runAction} onCutoff={() => runAction(() => api.runCutoff(date), "Cutoff run")} />}
-              {activeTab === "coordinator" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Incharge Teacher has filed them." />}
+              {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} />}
+              {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
+              {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
+              {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
               {activeTab === "students" && <StudentsAdmin state={state} runAction={runAction} />}
-              {activeTab === "rooms" && <RoomsAdmin state={state} runAction={runAction} />}
+              {activeTab === "structure" && <StructureAdmin state={state} runAction={runAction} />}
               {activeTab === "assign" && <AssignAdmin state={state} runAction={runAction} />}
-              {activeTab === "activate" && <ActivateAdmin state={state} runAction={runAction} />}
+              {activeTab === "createstaff" && <CreateStaffAdmin state={state} runAction={runAction} />}
+              {activeTab === "absentees" && <AbsenteesView state={state} />}
               {activeTab === "mychanges" && <MyChanges state={state} me={me} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
@@ -339,14 +511,13 @@ export default function App() {
         </div>
       </div>
 
-      {/* Bottom-right success/error pop-up — see showToast above */}
       {toast && <div className="fixed bottom-5 right-5 z-20"><Badge tone={toast.tone}>{toast.msg}</Badge></div>}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* Principal / dashboard                                              */
+/* 5a. Principal                                                      */
 /* ---------------------------------------------------------------- */
 function Stat({ label, value, tone = "slate" }) {
   return (
@@ -356,16 +527,10 @@ function Stat({ label, value, tone = "slate" }) {
     </Card>
   );
 }
-// The status/report table used by Principal, Coordinator, and Incharge
-// Teacher (with different `scopeFloorIds`/`title`/`subtitle` per role — see
-// where each is rendered in App() above). `viewDate` is local state so
-// browsing history doesn't require a network round trip: state.attendance
-// already contains every date's records (routes/state.js fetches all of
-// them), we're just choosing which date's slice to display.
-function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subtitle }) {
+function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
-  const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.floorId)) : state.classes;
+  const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
   const rows = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
   const verified = rows.filter((x) => currentStageIndex(x.r) === STAGES.length).length;
@@ -374,10 +539,8 @@ function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subti
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Target: fully approved and published by 11:00 AM \u2014 ${viewDate}` : `Viewing history for ${viewDate}`)} />
-        <Field label="Date">
-          <input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} />
-        </Field>
+        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Published straight to you once Coordinator approves — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`)} />
+        <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
       </div>
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Classes" value={rows.length} />
@@ -385,8 +548,7 @@ function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subti
         <Stat label="Verified" value={verified} tone="emerald" />
         <Stat label="Auto-passed" value={autoPassed} tone="rose" />
       </div>
-      {onCutoff && isToday && <div className="mb-5"><Btn variant="ghost" onClick={onCutoff}><Clock size={14} /> Run 11:00 AM cutoff now (demo)</Btn></div>}
-      <Card className="overflow-hidden">
+      <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Absent</th><th className="px-4 py-2.5">Status</th></tr>
@@ -411,83 +573,76 @@ function PrincipalDashboard({ state, date, onCutoff, scopeFloorIds, title, subti
   );
 }
 
-/* ---------------------------------------------------------------- */
-/* AO: hierarchy / assignment status                                  */
-/* ---------------------------------------------------------------- */
-// AO's "who covers what" view. Nothing here needs its own API call — it's
-// entirely computed from data we already have in `state` (staff, floors,
-// rooms, classes), by checking, for every room/floor/class, whether any
-// staff member's assignment array includes it.
-function AOHierarchyStatus({ state }) {
-  const byRole = (role) => state.staff.filter((s) => s.role === role);
-  const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("INCHARGE_TEACHER"), lais = byRole("LAI");
+// Principal creates the AO / Coordinator / Database Manager accounts —
+// "activating the system." Shows each newly generated key/password once,
+// since that's the only moment the plain default password is ever visible.
+function LeadershipSetup({ state, runAction }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("AO");
+  const [justCreated, setJustCreated] = useState(null);
+  const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
 
-  const roomsWithoutWarden = state.hostelRooms.filter((r) => !wardens.some((w) => (w.roomIds || []).includes(r.id)));
-  const floorsWithoutDO = state.floors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
-  const floorsWithoutTeacher = state.floors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
-  const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
-  // One flat list of plain-English gap descriptions, built by combining the
-  // four checks above plus a check for inactive accounts — this is what
-  // gets rendered as the amber warning box below.
-  const gaps = [
-    ...roomsWithoutWarden.map((r) => `${r.hostel} Room ${r.roomNo} has no Warden`),
-    ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
-    ...floorsWithoutTeacher.map((f) => `${f.name} has no Incharge Teacher`),
-    ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
-    ...state.staff.filter((s) => s.active === false).map((s) => `${s.name} (${ROLE_LABELS[s.role]}) isn't activated yet`),
-  ];
-
-  // A small local component (defined inside AOHierarchyStatus, so it isn't
-  // reusable elsewhere — fine, since only this screen needs this exact
-  // "role name + count of what they cover" card shape) used four times
-  // below, once per role.
-  const Group = ({ label, icon, list, describe }) => (
-    <Card className="p-4">
-      <p className="mb-3 text-sm font-semibold text-slate-700">{label}</p>
-      <div className="space-y-2">
-        {list.map((s) => (
-          <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-            <span className="font-medium text-slate-700">{s.name}{s.active === false && <Badge tone="amber"> not activated</Badge>}</span>
-            <span className="text-xs text-slate-500">{describe(s)}</span>
-          </div>
-        ))}
-        {list.length === 0 && <p className="text-sm text-slate-400">None yet.</p>}
-      </div>
-    </Card>
-  );
+  const submit = async () => {
+    if (!name.trim()) return;
+    const result = await runAction(() => api.createLeadership(name.trim(), role), "Account created");
+    if (result) { setJustCreated(result); setName(""); }
+  };
 
   return (
     <div>
-      <SectionTitle icon={Users} title="Hierarchy status" subtitle="Who covers what, and any gaps in coverage." />
-      {gaps.length > 0 && (
-        <Card className="mb-5 border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start gap-2 text-sm text-amber-800">
-            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-            <div>
-              <p className="font-medium">{gaps.length} gap(s) to review</p>
-              <ul className="mt-1 list-inside list-disc text-amber-700">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
-            </div>
-          </div>
+      <SectionTitle icon={UserPlus} title="Leadership accounts" subtitle="Create the AO, Coordinator, and Database Manager accounts. Each starts on the shared default password and must change it on first login." />
+      <Card className="mb-6 p-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Role">
+            <select value={role} onChange={(e) => setRole(e.target.value)} className={inputCls}>
+              <option value="AO">AO</option>
+              <option value="COORDINATOR">Coordinator</option>
+              <option value="DB_MANAGER">Database Manager</option>
+            </select>
+          </Field>
+          <div className="flex items-end"><Btn onClick={submit}><Plus size={14} /> Create account</Btn></div>
+        </div>
+      </Card>
+      {justCreated && (
+        <Card className="mb-6 border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-sm text-emerald-800">
+            Created <span className="font-medium">{justCreated.user.name}</span> ({ROLE_LABELS[justCreated.user.role]}) —
+            login key <span className="font-display font-semibold">{justCreated.loginKey}</span>, password <span className="font-display font-semibold">{justCreated.defaultPassword}</span>.
+            Hand these to them now — this is the only time the password is shown.
+          </p>
         </Card>
       )}
-      <div className="grid gap-4 md:grid-cols-2">
-        <Group label="Wardens" list={wardens} describe={(w) => `${(w.roomIds || []).length} room(s)`} />
-        <Group label="Discipline Officers (pooled per floor)" list={dos} describe={(d) => `${(d.floorIds || []).length} floor(s)`} />
-        <Group label="Incharge Teachers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
-        <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
-      </div>
+      <Card className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th></tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {existing.map((s) => (
+              <tr key={s.id}>
+                <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
+                <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
+                <td className="px-4 py-2.5 font-display text-slate-600">{s.loginKey}</td>
+                <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status}</Badge></td>
+              </tr>
+            ))}
+            {existing.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400">No leadership accounts yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* AO: master data approvals                                          */
+/* 5b. AO                                                              */
 /* ---------------------------------------------------------------- */
 function AOApprovals({ state, onApprove, onReject }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
   return (
     <div>
-      <SectionTitle icon={ShieldCheck} title="Master data approvals" subtitle="Every Database Manager change is applied only after your approval." />
+      <SectionTitle icon={ShieldCheck} title="Master data approvals" subtitle="Every Database Manager change — including new staff accounts — is applied only after your approval." />
       {pending.length === 0 && <EmptyNote text="No pending changes right now." />}
       <div className="space-y-3">
         {pending.map((c) => (
@@ -495,7 +650,10 @@ function AOApprovals({ state, onApprove, onReject }) {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="font-medium text-slate-800">{c.summary}</div>
-                <div className="mt-0.5 text-xs text-slate-500">Requested {new Date(c.createdAt).toLocaleString()}</div>
+                <div className="mt-0.5 text-xs text-slate-500">
+                  Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}
+                  {c.type === "create_staff" && c.payload?.loginKey && <> · assigned key <span className="font-display">{c.payload.loginKey}</span></>}
+                </div>
               </div>
               <div className="flex gap-2">
                 <Btn size="sm" variant="success" onClick={() => onApprove(c)}><Check size={13} /> Approve</Btn>
@@ -520,16 +678,99 @@ function AOApprovals({ state, onApprove, onReject }) {
   );
 }
 
+function AOFreezeAccounts({ state, runAction }) {
+  const staff = state.staff.filter((s) => s.role !== "PRINCIPAL");
+  return (
+    <div>
+      <SectionTitle icon={Snowflake} title="Freeze / unfreeze accounts" subtitle="Freezing pauses an account immediately — they can't log in again until you unfreeze them. Past work stays untouched." />
+      <Card className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {staff.map((s) => (
+              <tr key={s.id}>
+                <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
+                <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
+                <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : s.status === "FROZEN" ? "rose" : "amber"}>{s.status}</Badge></td>
+                <td className="px-4 py-2.5 text-right">
+                  {s.status === "FROZEN" ? (
+                    <Btn size="sm" variant="success" onClick={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")}>Unfreeze</Btn>
+                  ) : s.status === "ACTIVE" ? (
+                    <Btn size="sm" variant="danger" onClick={() => runAction(() => api.freezeUser(s.id), "Frozen")}><Snowflake size={12} /> Freeze</Btn>
+                  ) : (
+                    <span className="text-xs text-slate-400">n/a</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function AOHierarchyStatus({ state }) {
+  const byRole = (role) => state.staff.filter((s) => s.role === role);
+  const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("INCHARGE_TEACHER"), lais = byRole("LAI");
+
+  const roomsWithoutWarden = state.hostelRooms.filter((r) => !wardens.some((w) => (w.roomIds || []).includes(r.id)));
+  const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
+  const floorsWithoutTeacher = state.collegeFloors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
+  const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
+  const gaps = [
+    ...roomsWithoutWarden.map((r) => `Room ${r.roomNo} has no Warden`),
+    ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
+    ...floorsWithoutTeacher.map((f) => `${f.name} has no Incharge Teacher`),
+    ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
+    ...state.staff.filter((s) => s.status === "PENDING").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is waiting on approval`),
+    ...state.staff.filter((s) => s.status === "FROZEN").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is frozen`),
+  ];
+
+  const Group = ({ label, list, describe }) => (
+    <Card className="p-4">
+      <p className="mb-3 text-sm font-semibold text-slate-700">{label}</p>
+      <div className="space-y-2">
+        {list.map((s) => (
+          <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <span className="font-medium text-slate-700">{s.name} {s.status !== "ACTIVE" && <Badge tone="amber">{s.status}</Badge>}</span>
+            <span className="text-xs text-slate-500">{describe(s)}</span>
+          </div>
+        ))}
+        {list.length === 0 && <p className="text-sm text-slate-400">None yet.</p>}
+      </div>
+    </Card>
+  );
+
+  return (
+    <div>
+      <SectionTitle icon={Users} title="Hierarchy status" subtitle="Who covers what, and any gaps in coverage." />
+      {gaps.length > 0 && (
+        <Card className="mb-5 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start gap-2 text-sm text-amber-800">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">{gaps.length} thing(s) to review</p>
+              <ul className="mt-1 list-inside list-disc text-amber-700">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
+            </div>
+          </div>
+        </Card>
+      )}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Group label="Wardens" list={wardens} describe={(w) => `${(w.roomIds || []).length} room(s)`} />
+        <Group label="Discipline Officers (pooled per floor)" list={dos} describe={(d) => `${(d.floorIds || []).length} floor(s)`} />
+        <Group label="Incharge Teachers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
+        <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- */
-/* Approval queue (shared by Teacher / Coordinator / AO-final)        */
+/* 5c. Shared approval queue (Incharge Teacher and Coordinator)       */
 /* ---------------------------------------------------------------- */
-// One shared component for three different screens: Incharge Teacher's
-// "Approve lists", Coordinator's "Attendance approvals", and AO's "Final
-// attendance approval". They're all the same shape — a list of classes
-// waiting on you, an Approve button, and a history of what you've already
-// done — so instead of three near-identical components, this one takes
-// `stageKey` (which field to set) and `requiredPriorKey` (which field must
-// already be set before you're allowed to act) as props.
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note }) {
   const day = state.attendance[date] || {};
   const withRecord = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
@@ -550,12 +791,16 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
           const count = absentees.length + away.length;
           return (
             <Card key={c.id} className="p-4">
+              <SentBackBanner record={r} />
               <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="font-medium text-slate-800">{c.name}</div>
-                  <div className="text-xs text-slate-500">{count} absent · headcount {r.headcount ?? "\u2014"}</div>
+                  <div className="text-xs text-slate-500">{count} absent · headcount {r.headcount ?? "—"}</div>
                 </div>
-                <Btn size="sm" variant="success" onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}><Check size={13} /> Approve</Btn>
+                <div className="flex flex-wrap gap-2">
+                  <Btn size="sm" variant="success" onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}><Check size={13} /> Approve</Btn>
+                  <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason), "Sent back")} />
+                </div>
               </div>
               {count > 0 && (
                 <ul className="mt-2 space-y-1">
@@ -582,7 +827,7 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
             {done.map(({ c, r }) => (
               <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
                 <span>{c.name}</span>
-                <span className="text-xs text-slate-400">{r[stageKey].byName} · {new Date(r[stageKey].at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <span className="text-xs text-slate-400">{r[stageKey].byName} · {formatTime(r[stageKey].at)}</span>
               </div>
             ))}
           </div>
@@ -592,39 +837,49 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
   );
 }
 
-function FinalApproval({ state, date, runAction, onCutoff }) {
+// Coordinator is the last human stage now (AO no longer approves daily
+// attendance), so the deadline cutoff control lives here.
+function CoordinatorApprovals({ state, date, runAction }) {
   return (
     <div>
-      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="aoApproved" requiredPriorKey="coordinatorApproved" roleLabel="AO final" note="Last sign-off before the Principal's report is published." />
+      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Incharge Teacher has filed them. Approving here publishes straight to the Principal's report." />
       <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
         <div className="flex items-start gap-2 text-sm text-amber-800">
           <Bell size={15} className="mt-0.5 shrink-0" />
           <div>
             <p className="font-medium">Deadline cutoff</p>
-            <p className="mt-0.5 text-amber-700">Anything not fully approved by the cutoff is published anyway, tagged "auto-passed," and can still be completed afterward to clear the tag.</p>
+            <p className="mt-0.5 text-amber-700">Anything still waiting on a Teacher or your own approval past the cutoff gets published anyway, tagged "auto-passed." A list still stuck on the DO is never auto-passed — that verification has to actually happen.</p>
           </div>
         </div>
-        <div className="mt-3"><Btn variant="outline" onClick={onCutoff}><Clock size={14} /> Run cutoff now (demo)</Btn></div>
+        <div className="mt-3"><Btn variant="outline" onClick={() => runAction(() => api.runCutoff(date), "Cutoff run")}><Clock size={14} /> Run cutoff now (demo)</Btn></div>
       </div>
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* DB Manager screens                                                  */
+/* 5d. Database Manager                                               */
 /* ---------------------------------------------------------------- */
-// The Database Manager's four admin screens (this one plus RoomsAdmin,
-// AssignAdmin, ActivateAdmin below) all follow the same pattern: fill in a
-// small form, click a button that calls `api.proposeChange(...)`, which
-// creates a PendingChange row on the server — nothing here ever writes to
-// the real students/rooms/staff tables directly. Look at StudentsAdmin's
-// submitAdd/submitEdit/submitDelete for the pattern; the others just repeat
-// it for different change types (see server/src/applyChange.js for what
-// each type actually does once an AO approves it).
+
+// Hostel structure is three levels deep (Hostel -> HostelFloor -> Room), so
+// anywhere a room needs a human-readable label, build it by walking back
+// up through the two lookups rather than storing a flat string anywhere.
+function roomLabel(state, roomId) {
+  const room = state.hostelRooms.find((r) => r.id === roomId);
+  if (!room) return "Unknown room";
+  const floor = state.hostelFloors.find((f) => f.id === room.hostelFloorId);
+  const hostel = floor && state.hostels.find((h) => h.id === floor.hostelId);
+  return `${hostel?.name || "?"} / ${floor?.name || "?"} / Room ${room.roomNo}`;
+}
+function roomOptions(state) {
+  return state.hostelRooms.map((r) => ({ value: r.id, label: roomLabel(state, r.id) }));
+}
+
 function StudentsAdmin({ state, runAction }) {
   const [name, setName] = useState(""); const [roll, setRoll] = useState("");
   const [classId, setClassId] = useState(""); const [roomId, setRoomId] = useState("");
   const [editing, setEditing] = useState(null);
+  const [search, setSearch] = useState("");
 
   const submitAdd = () => {
     if (!name || !roll || !classId) return;
@@ -637,6 +892,12 @@ function StudentsAdmin({ state, runAction }) {
     setEditing(null);
   };
 
+  const q = search.trim().toLowerCase();
+  const filtered = !q ? state.students : state.students.filter((s) => {
+    const cls = state.classes.find((c) => c.id === s.classId);
+    return s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q) || cls?.name.toLowerCase().includes(q);
+  });
+
   return (
     <div>
       <SectionTitle icon={GraduationCap} title="Students" subtitle="Changes are sent to the AO for approval before they take effect." />
@@ -645,26 +906,27 @@ function StudentsAdmin({ state, runAction }) {
         <div className="grid gap-3 sm:grid-cols-4">
           <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label="Roll number"><input className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
-          <Field label="Class"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-          <Field label="Hostel room (optional)"><Select value={roomId} onChange={setRoomId} options={state.hostelRooms.map((r) => ({ value: r.id, label: `${r.hostel} ${r.roomNo}` }))} /></Field>
+          <Field label="Class / batch"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+          <Field label="Hostel room (optional)"><Select value={roomId} onChange={setRoomId} options={roomOptions(state)} /></Field>
         </div>
         <div className="mt-3"><Btn onClick={submitAdd}><Plus size={14} /> Send for AO approval</Btn></div>
       </Card>
-      <Card className="overflow-hidden">
+
+      <SearchBox value={search} onChange={setSearch} placeholder="Search by name, roll number, or class..." />
+      <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Roll</th><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Room</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {state.students.map((s) => {
-              const room = state.hostelRooms.find((r) => r.id === s.roomId);
+            {filtered.map((s) => {
               const cls = state.classes.find((c) => c.id === s.classId);
               return (
                 <tr key={s.id}>
                   <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                   <td className="px-4 py-2.5 text-slate-600">{s.roll}</td>
                   <td className="px-4 py-2.5 text-slate-600">{cls?.name}</td>
-                  <td className="px-4 py-2.5 text-slate-500">{room ? `${room.hostel} ${room.roomNo}` : "Day scholar"}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "Day scholar"}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setEditing({ ...s })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
@@ -674,9 +936,11 @@ function StudentsAdmin({ state, runAction }) {
                 </tr>
               );
             })}
+            {filtered.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No matching students.</td></tr>}
           </tbody>
         </table>
       </Card>
+
       {editing && (
         <div className="fixed inset-0 z-30 grid place-items-center bg-slate-900/40 p-4">
           <Card className="w-full max-w-md p-5">
@@ -684,8 +948,8 @@ function StudentsAdmin({ state, runAction }) {
             <div className="space-y-3">
               <Field label="Name"><input className={inputCls} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
               <Field label="Roll number"><input className={inputCls} value={editing.roll} onChange={(e) => setEditing({ ...editing, roll: e.target.value })} /></Field>
-              <Field label="Class"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-              <Field label="Room"><Select value={editing.roomId || ""} onChange={(v) => setEditing({ ...editing, roomId: v })} options={state.hostelRooms.map((r) => ({ value: r.id, label: `${r.hostel} ${r.roomNo}` }))} /></Field>
+              <Field label="Class / batch"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+              <Field label="Room"><Select value={editing.roomId || ""} onChange={(v) => setEditing({ ...editing, roomId: v })} options={roomOptions(state)} /></Field>
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Btn variant="ghost" onClick={() => setEditing(null)}>Cancel</Btn>
@@ -698,41 +962,80 @@ function StudentsAdmin({ state, runAction }) {
   );
 }
 
-function RoomsAdmin({ state, runAction }) {
-  const [hostel, setHostel] = useState("Hostel Block A"); const [roomNo, setRoomNo] = useState("");
-  const [floorId, setFloorId] = useState(state.floors[0]?.id || "");
-  const [className, setClassName] = useState(""); const [classFloorId, setClassFloorId] = useState(state.floors[0]?.id || "");
+// Hostel structure is three levels (Hostel -> Floor -> Room); college
+// structure is two (CollegeFloor -> Class). Each level's dropdown is
+// filtered by whatever's selected above it.
+function StructureAdmin({ state, runAction }) {
+  const [hostelName, setHostelName] = useState("");
+  const [floorHostelId, setFloorHostelId] = useState(""); const [floorName, setFloorName] = useState("");
+  const [roomHostelId, setRoomHostelId] = useState(""); const [roomFloorId, setRoomFloorId] = useState(""); const [roomNo, setRoomNo] = useState("");
+  const [collegeFloorName, setCollegeFloorName] = useState("");
+  const [classFloorId, setClassFloorId] = useState(""); const [className, setClassName] = useState("");
+
+  const floorsForHostel = (hostelId) => state.hostelFloors.filter((f) => f.hostelId === hostelId);
 
   return (
     <div>
-      <SectionTitle icon={Bed} title="Hostel rooms & classes" subtitle="Add structure that staff and students can be assigned to." />
+      <SectionTitle icon={Building2} title="Hostels & classes" subtitle="Add structure that students and staff can be assigned to. Start small — add more hostels, floors, and classes any time." />
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">Add a hostel room</p>
-          <div className="space-y-3">
-            <Field label="Hostel"><input className={inputCls} value={hostel} onChange={(e) => setHostel(e.target.value)} /></Field>
-            <Field label="Room number"><input className={inputCls} value={roomNo} onChange={(e) => setRoomNo(e.target.value)} /></Field>
-            <Field label="Floor"><Select value={floorId} onChange={setFloorId} options={state.floors.map((f) => ({ value: f.id, label: f.name }))} /></Field>
-          </div>
-          <div className="mt-3"><Btn onClick={() => { if (!roomNo) return; runAction(() => api.proposeChange("add_room", `Add room ${hostel} ${roomNo}`, { hostel, roomNo, floorId }), "Sent to AO for approval"); setRoomNo(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
+          <p className="mb-3 text-sm font-semibold text-slate-700">1. Add a hostel</p>
+          <Field label="Hostel name"><input className={inputCls} value={hostelName} onChange={(e) => setHostelName(e.target.value)} /></Field>
+          <div className="mt-3"><Btn onClick={() => { if (!hostelName) return; runAction(() => api.proposeChange("add_hostel", `Add hostel ${hostelName}`, { name: hostelName }), "Sent to AO for approval"); setHostelName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
         </Card>
+
         <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">Add a class to a floor</p>
+          <p className="mb-3 text-sm font-semibold text-slate-700">2. Add a floor to a hostel</p>
           <div className="space-y-3">
-            <Field label="Class name"><input className={inputCls} value={className} onChange={(e) => setClassName(e.target.value)} /></Field>
-            <Field label="Floor"><Select value={classFloorId} onChange={setClassFloorId} options={state.floors.map((f) => ({ value: f.id, label: f.name }))} /></Field>
+            <Field label="Hostel"><Select value={floorHostelId} onChange={setFloorHostelId} options={state.hostels.map((h) => ({ value: h.id, label: h.name }))} /></Field>
+            <Field label="Floor name"><input className={inputCls} value={floorName} onChange={(e) => setFloorName(e.target.value)} /></Field>
           </div>
-          <div className="mt-3"><Btn onClick={() => { if (!className) return; runAction(() => api.proposeChange("add_class", `Add class ${className}`, { name: className, floorId: classFloorId }), "Sent to AO for approval"); setClassName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
+          <div className="mt-3"><Btn disabled={!floorHostelId || !floorName} onClick={() => { runAction(() => api.proposeChange("add_hostel_floor", `Add floor ${floorName}`, { name: floorName, hostelId: floorHostelId }), "Sent to AO for approval"); setFloorName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
+        </Card>
+
+        <Card className="p-4">
+          <p className="mb-3 text-sm font-semibold text-slate-700">3. Add a room to a floor</p>
+          <div className="space-y-3">
+            <Field label="Hostel"><Select value={roomHostelId} onChange={(v) => { setRoomHostelId(v); setRoomFloorId(""); }} options={state.hostels.map((h) => ({ value: h.id, label: h.name }))} /></Field>
+            <Field label="Floor"><Select value={roomFloorId} onChange={setRoomFloorId} options={floorsForHostel(roomHostelId).map((f) => ({ value: f.id, label: f.name }))} /></Field>
+            <Field label="Room number"><input className={inputCls} value={roomNo} onChange={(e) => setRoomNo(e.target.value)} /></Field>
+          </div>
+          <div className="mt-3"><Btn disabled={!roomFloorId || !roomNo} onClick={() => { runAction(() => api.proposeChange("add_room", `Add room ${roomNo}`, { roomNo, hostelFloorId: roomFloorId }), "Sent to AO for approval"); setRoomNo(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
+        </Card>
+
+        <Card className="p-4">
+          <p className="mb-3 text-sm font-semibold text-slate-700">4. Add a college floor</p>
+          <Field label="Floor name"><input className={inputCls} value={collegeFloorName} onChange={(e) => setCollegeFloorName(e.target.value)} /></Field>
+          <div className="mt-3"><Btn disabled={!collegeFloorName} onClick={() => { runAction(() => api.proposeChange("add_college_floor", `Add college floor ${collegeFloorName}`, { name: collegeFloorName }), "Sent to AO for approval"); setCollegeFloorName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
+        </Card>
+
+        <Card className="p-4 md:col-span-2">
+          <p className="mb-3 text-sm font-semibold text-slate-700">5. Add a class / batch to a college floor</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="College floor"><Select value={classFloorId} onChange={setClassFloorId} options={state.collegeFloors.map((f) => ({ value: f.id, label: f.name }))} /></Field>
+            <Field label="Class / batch name"><input className={inputCls} value={className} onChange={(e) => setClassName(e.target.value)} /></Field>
+          </div>
+          <div className="mt-3"><Btn disabled={!classFloorId || !className} onClick={() => { runAction(() => api.proposeChange("add_class", `Add class ${className}`, { name: className, collegeFloorId: classFloorId }), "Sent to AO for approval"); setClassName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
         </Card>
       </div>
+
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         <Card className="p-4">
-          <p className="mb-2 text-sm font-semibold text-slate-700">Current rooms</p>
-          <ul className="space-y-1 text-sm text-slate-600">{state.hostelRooms.map((r) => <li key={r.id}>{r.hostel} — Room {r.roomNo}</li>)}</ul>
+          <p className="mb-2 text-sm font-semibold text-slate-700">Current hostel structure</p>
+          <ul className="space-y-1 text-sm text-slate-600">
+            {state.hostelRooms.map((r) => <li key={r.id}>{roomLabel(state, r.id)}</li>)}
+            {state.hostelRooms.length === 0 && <li className="text-slate-400">No rooms yet.</li>}
+          </ul>
         </Card>
         <Card className="p-4">
           <p className="mb-2 text-sm font-semibold text-slate-700">Current classes</p>
-          <ul className="space-y-1 text-sm text-slate-600">{state.classes.map((c) => <li key={c.id}>{c.name}</li>)}</ul>
+          <ul className="space-y-1 text-sm text-slate-600">
+            {state.classes.map((c) => {
+              const floor = state.collegeFloors.find((f) => f.id === c.collegeFloorId);
+              return <li key={c.id}>{c.name} ({floor?.name})</li>;
+            })}
+            {state.classes.length === 0 && <li className="text-slate-400">No classes yet.</li>}
+          </ul>
         </Card>
       </div>
     </div>
@@ -756,56 +1059,159 @@ function AssignAdmin({ state, runAction }) {
       {options.map((o) => (
         <button key={o.value} onClick={() => onToggle(o.value)} className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${selected.includes(o.value) ? "border-[#12324D] bg-[#12324D] text-white" : "border-slate-300 text-slate-600"}`}>{o.label}</button>
       ))}
+      {options.length === 0 && <span className="text-xs text-slate-400">Nothing to choose from yet — add some first.</span>}
     </div>
   );
 
   return (
     <div>
-      <SectionTitle icon={UserCog} title="Assign staff" subtitle="A warden can cover several rooms. DOs and Incharge Teachers are pooled per floor — any one assigned can act." />
+      <SectionTitle icon={UserCog} title="Assign staff" subtitle="A Warden can cover several rooms. DOs and Incharge Teachers are pooled per floor — any one assigned can act." />
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Warden to room(s)</p>
           <Field label="Warden"><Select value={wardenId} onChange={(v) => { setWardenId(v); setWardenRooms(state.staff.find((s) => s.id === v)?.roomIds || []); }} options={wardens.map((w) => ({ value: w.id, label: w.name }))} /></Field>
-          <div className="mt-3"><CheckGroup options={state.hostelRooms.map((r) => ({ value: r.id, label: `${r.hostel} ${r.roomNo}` }))} selected={wardenRooms} onToggle={(v) => setWardenRooms(toggle(wardenRooms, v))} /></div>
-          <div className="mt-3"><Btn onClick={() => wardenId && runAction(() => api.proposeChange("assign_warden", `Assign ${wardens.find((w) => w.id === wardenId)?.name} to ${wardenRooms.length} room(s)`, { staffId: wardenId, roomIds: wardenRooms }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <div className="mt-3"><CheckGroup options={roomOptions(state)} selected={wardenRooms} onToggle={(v) => setWardenRooms(toggle(wardenRooms, v))} /></div>
+          <div className="mt-3"><Btn disabled={!wardenId} onClick={() => runAction(() => api.proposeChange("assign_warden", `Assign ${wardens.find((w) => w.id === wardenId)?.name} to ${wardenRooms.length} room(s)`, { staffId: wardenId, roomIds: wardenRooms }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Discipline Officer to floor(s)</p>
           <Field label="DO"><Select value={doId} onChange={(v) => { setDoId(v); setDoFloors(state.staff.find((s) => s.id === v)?.floorIds || []); }} options={dos.map((w) => ({ value: w.id, label: w.name }))} /></Field>
-          <div className="mt-3"><CheckGroup options={state.floors.map((f) => ({ value: f.id, label: f.name }))} selected={doFloors} onToggle={(v) => setDoFloors(toggle(doFloors, v))} /></div>
-          <div className="mt-3"><Btn onClick={() => doId && runAction(() => api.proposeChange("assign_do", `Assign ${dos.find((w) => w.id === doId)?.name} as DO`, { staffId: doId, floorIds: doFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <div className="mt-3"><CheckGroup options={state.collegeFloors.map((f) => ({ value: f.id, label: f.name }))} selected={doFloors} onToggle={(v) => setDoFloors(toggle(doFloors, v))} /></div>
+          <div className="mt-3"><Btn disabled={!doId} onClick={() => runAction(() => api.proposeChange("assign_do", `Assign ${dos.find((w) => w.id === doId)?.name} as DO`, { staffId: doId, floorIds: doFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Incharge Teacher to floor(s)</p>
           <Field label="Teacher"><Select value={teacherId} onChange={(v) => { setTeacherId(v); setTeacherFloors(state.staff.find((s) => s.id === v)?.floorIds || []); }} options={teachers.map((w) => ({ value: w.id, label: w.name }))} /></Field>
-          <div className="mt-3"><CheckGroup options={state.floors.map((f) => ({ value: f.id, label: f.name }))} selected={teacherFloors} onToggle={(v) => setTeacherFloors(toggle(teacherFloors, v))} /></div>
-          <div className="mt-3"><Btn onClick={() => teacherId && runAction(() => api.proposeChange("assign_teacher", `Assign ${teachers.find((w) => w.id === teacherId)?.name} as Incharge Teacher`, { staffId: teacherId, floorIds: teacherFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <div className="mt-3"><CheckGroup options={state.collegeFloors.map((f) => ({ value: f.id, label: f.name }))} selected={teacherFloors} onToggle={(v) => setTeacherFloors(toggle(teacherFloors, v))} /></div>
+          <div className="mt-3"><Btn disabled={!teacherId} onClick={() => runAction(() => api.proposeChange("assign_teacher", `Assign ${teachers.find((w) => w.id === teacherId)?.name} as Incharge Teacher`, { staffId: teacherId, floorIds: teacherFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Local Attendance Incharge to class</p>
           <Field label="LAI"><Select value={laiId} onChange={(v) => { setLaiId(v); setLaiClasses(state.staff.find((s) => s.id === v)?.classIds || []); }} options={lais.map((w) => ({ value: w.id, label: w.name }))} /></Field>
           <div className="mt-3"><CheckGroup options={state.classes.map((c) => ({ value: c.id, label: c.name }))} selected={laiClasses} onToggle={(v) => setLaiClasses(toggle(laiClasses, v))} /></div>
-          <div className="mt-3"><Btn onClick={() => laiId && runAction(() => api.proposeChange("assign_lai", `Assign ${lais.find((w) => w.id === laiId)?.name} as LAI`, { staffId: laiId, classIds: laiClasses }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <div className="mt-3"><Btn disabled={!laiId} onClick={() => runAction(() => api.proposeChange("assign_lai", `Assign ${lais.find((w) => w.id === laiId)?.name} as LAI`, { staffId: laiId, classIds: laiClasses }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
       </div>
     </div>
   );
 }
 
-function ActivateAdmin({ state, runAction }) {
-  const inactive = state.staff.filter((s) => s.active === false);
+// Replaces the old "activate an existing account" screen: the Database
+// Manager now creates the account from scratch. It's sent to the AO as a
+// PendingChange of type "create_staff", which already has its login key
+// generated server-side (see routes/changes.js) by the time this returns.
+function CreateStaffAdmin({ state, runAction }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("WARDEN");
+  const [scope, setScope] = useState([]);
+  const [justSent, setJustSent] = useState(null);
+  const toggle = (arr, val) => (arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val]);
+
+  const scopeOptions = role === "WARDEN" ? roomOptions(state)
+    : role === "LAI" ? state.classes.map((c) => ({ value: c.id, label: c.name }))
+    : state.collegeFloors.map((f) => ({ value: f.id, label: f.name })); // DO / INCHARGE_TEACHER
+
+  const scopeField = role === "WARDEN" ? "roomIds" : role === "LAI" ? "classIds" : "floorIds";
+  const scopeLabel = role === "WARDEN" ? "Room(s)" : role === "LAI" ? "Class(es)" : "Floor(s)";
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    const payload = { name: name.trim(), role, [scopeField]: scope };
+    const result = await runAction(() => api.proposeChange("create_staff", `Create ${ROLE_LABELS[role]} account: ${name.trim()}`, payload), "Sent to AO for approval");
+    if (result) { setJustSent({ name: name.trim(), role, key: result.change.payload.loginKey }); setName(""); setScope([]); }
+  };
+
+  const recent = state.pendingChanges.filter((c) => c.type === "create_staff").slice(0, 8);
+
   return (
     <div>
-      <SectionTitle icon={Users} title="Activate accounts" subtitle="Field-staff accounts stay locked until activated." />
-      {inactive.length === 0 && <EmptyNote text="Everyone is already active." />}
+      <SectionTitle icon={UserPlus} title="Create a staff account" subtitle="Warden, Local Attendance Incharge, Discipline Officer, or Incharge Teacher. Sent to the AO for approval before it can log in." />
+      <Card className="mb-6 p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Role">
+            <select value={role} onChange={(e) => { setRole(e.target.value); setScope([]); }} className={inputCls}>
+              <option value="WARDEN">Warden</option>
+              <option value="LAI">Local Attendance Incharge</option>
+              <option value="DO">Discipline Officer</option>
+              <option value="INCHARGE_TEACHER">Incharge Teacher</option>
+            </select>
+          </Field>
+        </div>
+        <div className="mt-3">
+          <p className="mb-1.5 text-sm font-medium text-slate-700">{scopeLabel} (optional — can be assigned later)</p>
+          <div className="flex flex-wrap gap-2">
+            {scopeOptions.map((o) => (
+              <button key={o.value} onClick={() => setScope(toggle(scope, o.value))} className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${scope.includes(o.value) ? "border-[#12324D] bg-[#12324D] text-white" : "border-slate-300 text-slate-600"}`}>{o.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4"><Btn onClick={submit}><Plus size={14} /> Send for AO approval</Btn></div>
+      </Card>
+
+      {justSent && (
+        <Card className="mb-6 border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-sm text-emerald-800">
+            Sent <span className="font-medium">{justSent.name}</span> ({ROLE_LABELS[justSent.role]}) to the AO —
+            their login key will be <span className="font-display font-semibold">{justSent.key}</span> once approved (password: the shared default).
+          </p>
+        </Card>
+      )}
+
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent requests</p>
       <div className="space-y-2">
-        {inactive.map((s) => (
-          <Card key={s.id} className="flex items-center justify-between p-3">
-            <div><span className="font-medium text-slate-800">{s.name}</span> <span className="text-sm text-slate-500">— {ROLE_LABELS[s.role]}</span></div>
-            <Btn size="sm" onClick={() => runAction(() => api.proposeChange("activate_staff", `Activate ${s.name} (${ROLE_LABELS[s.role]})`, { staffId: s.id }), "Sent to AO for approval")}>Request activation</Btn>
-          </Card>
+        {recent.map((c) => (
+          <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
+            <span className="text-slate-700">{c.summary} {c.payload?.loginKey && <span className="font-display text-xs text-slate-400">(key {c.payload.loginKey})</span>}</span>
+            <Badge tone={c.status === "approved" ? "emerald" : c.status === "rejected" ? "rose" : "amber"}>{c.status}</Badge>
+          </div>
         ))}
+        {recent.length === 0 && <EmptyNote text="No staff accounts created yet." />}
       </div>
+    </div>
+  );
+}
+
+// Read-only for the Database Manager: who's absent today, nothing else.
+// Combines Warden/LAI-reported absentees with persistent "away" students.
+function AbsenteesView({ state }) {
+  const [viewDate, setViewDate] = useState(todayStr());
+  const day = state.attendance[viewDate] || {};
+  const rows = [];
+  for (const c of state.classes) {
+    const r = day[c.id] || emptyRecord();
+    const ids = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+    state.students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
+    for (const sid of ids) {
+      const student = state.students.find((s) => s.id === sid);
+      if (student) rows.push({ roll: student.roll, name: student.name, className: c.name });
+    }
+  }
+  rows.sort((a, b) => a.className.localeCompare(b.className) || a.roll.localeCompare(b.roll));
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle icon={ClipboardCheck} title="View absentees" subtitle={`${formatDMY(viewDate)} — roll number, name, and class only.`} />
+        <Field label="Date"><input type="date" max={todayStr()} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+      </div>
+      <Card className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr><th className="px-4 py-2.5">Roll number</th><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Class</th></tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td className="px-4 py-2.5 text-slate-600">{r.roll}</td>
+                <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
+                <td className="px-4 py-2.5 text-slate-600">{r.className}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-slate-400">No absentees recorded for this date.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }
@@ -829,36 +1235,30 @@ function MyChanges({ state, me }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Warden: mark absentees with a reason, plus persistent "away" list  */
+/* 5e. Warden and LAI                                                  */
 /* ---------------------------------------------------------------- */
-// The Warden's screen — the most stateful component in the app.
-// `pickerFor` remembers which single student currently has their little
-// reason-picker expanded (only one at a time, across every room/class).
-// Students are split into two groups before rendering: `away` (persistent,
-// no daily action needed) and `present` (everyone else, who might get
-// marked absent today). See constants.js on the server for why "Went home"
-// is the one reason that goes through a different API call (markAway)
-// instead of the normal setAbsence.
 function WardenScreen({ state, date, me, runAction }) {
   const rooms = me.roomIds || [];
   const allStudents = state.students.filter((s) => rooms.includes(s.roomId));
   const away = allStudents.filter((s) => s.awayReason);
   const present = allStudents.filter((s) => !s.awayReason);
   const [pickerFor, setPickerFor] = useState(null); // studentId currently choosing a reason
+  const [search, setSearch] = useState("");
+
+  const q = search.trim().toLowerCase();
+  const visiblePresent = !q ? present : present.filter((s) => s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
 
   return (
     <div>
-      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today \u2014 picking a reason marks a student absent.`} />
+      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today — picking a reason marks a student absent.`} />
 
-      {/* Section 1: persistent "away" students — read-only except for the
-          one "Mark reported" button; nothing here is per-day state */}
       {away.length > 0 && (
         <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
           <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
           <div className="space-y-2">
             {away.map((s) => (
               <div key={s.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
-                <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {s.awayReason} since {s.awaySince}</span></span>
+                <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {s.awayReason} since {formatDMY(s.awaySince)}</span></span>
                 <Btn size="sm" variant="outline" onClick={() => runAction(() => api.reportBack(s.id), "Marked as reported back")}>Mark reported</Btn>
               </div>
             ))}
@@ -866,28 +1266,29 @@ function WardenScreen({ state, date, me, runAction }) {
         </Card>
       )}
 
-      {/* Section 2: everyone else, one card per class, grouped so a Warden
-          whose rooms span two classes sees two clearly separated lists */}
       {allStudents.length === 0 && <EmptyNote text="No students assigned to you yet." />}
+      {allStudents.length > 0 && <SearchBox value={search} onChange={setSearch} placeholder="Search your students by name or roll number..." />}
+
       <div className="space-y-4">
-        {Object.entries(groupBy(present, (s) => s.classId)).map(([classId, list]) => {
+        {Object.entries(groupBy(visiblePresent, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
           const r = state.attendance[date]?.[classId] || emptyRecord();
-          const locked = !!r.doApproved; // DO has approved — freeze this class's card
+          const locked = !!r.doApproved;
           const bucket = r.wardenAbsences || {};
+          const sentBackHere = r.sentBack?.toStage === "warden_lai";
           return (
             <Card key={classId} className="p-4">
+              {sentBackHere && <SentBackBanner record={r} />}
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-medium text-slate-800">{cls?.name}</p>
                 {locked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {list.map((s) => {
-                  const entry = bucket[s.id]; // this student's current absence entry, if any
-                  const choosing = pickerFor === s.id; // is their reason-picker open right now?
+                  const entry = bucket[s.id];
+                  const choosing = pickerFor === s.id;
                   return (
                     <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
-                      {/* Name + the chevron that opens/closes the reason picker below */}
                       <div className="flex items-center justify-between">
                         <div>
                           <span className="font-medium text-slate-700">{s.name}</span>
@@ -899,8 +1300,6 @@ function WardenScreen({ state, date, me, runAction }) {
                           </button>
                         )}
                       </div>
-                      {/* Current status line: either "Absent — reason" with a clear (X)
-                          button, or plain "Present" */}
                       {entry ? (
                         <div className="mt-1 flex items-center justify-between text-rose-700">
                           <span>Absent — {entry.reason}</span>
@@ -911,20 +1310,18 @@ function WardenScreen({ state, date, me, runAction }) {
                       )}
                       {choosing && !locked && (
                         <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
-                          {/* Ordinary reasons: one-day absence via setAbsence */}
                           {DAILY_REASONS.map((reason) => (
                             <button key={reason} onClick={() => { runAction(() => api.setAbsence(date, classId, s.id, reason)); setPickerFor(null); }}
                               className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">{reason}</button>
                           ))}
-                          {/* "Went home" is different: markAway sets the persistent
-                              flag instead of writing to today's record at all */}
-                          <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away \u2014 counted absent until reported back"); setPickerFor(null); }}
+                          <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away — counted absent until reported back"); setPickerFor(null); }}
                             className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100">{AWAY_REASON}</button>
                         </div>
                       )}
                     </div>
                   );
                 })}
+                {list.length === 0 && <p className="text-sm text-slate-400 sm:col-span-2">No students match your search in this class.</p>}
               </div>
             </Card>
           );
@@ -934,29 +1331,28 @@ function WardenScreen({ state, date, me, runAction }) {
   );
 }
 
-/* ---------------------------------------------------------------- */
-/* LAI: mark absentees, no reason — DO fills that in after a call */
-/* ---------------------------------------------------------------- */
-// The LAI's screen — much simpler than the Warden's: just a present/absent
-// toggle with no reason picker, because LAIs never supply a reason (see
-// server/src/routes/attendance.js — the server ignores any reason an LAI
-// sends anyway). Students already on a persistent "away" status are
-// filtered out entirely; they're the Warden's concern, not the LAI's.
 function LAIScreen({ state, date, me, runAction }) {
   const classIds = me.classIds || [];
   const students = state.students.filter((s) => classIds.includes(s.classId) && !s.awayReason);
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+  const visible = !q ? students : students.filter((s) => s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
+
   return (
     <div>
       <SectionTitle icon={GraduationCap} title="Mark classroom absentees" subtitle="No reason needed here — the Discipline Officer will call home and record the reason." />
       {students.length === 0 && <EmptyNote text="No students assigned to you yet." />}
+      {students.length > 0 && <SearchBox value={search} onChange={setSearch} placeholder="Search your students by name or roll number..." />}
       <div className="space-y-4">
-        {Object.entries(groupBy(students, (s) => s.classId)).map(([classId, list]) => {
+        {Object.entries(groupBy(visible, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
           const r = state.attendance[date]?.[classId] || emptyRecord();
           const locked = !!r.doApproved;
           const bucket = r.laiAbsences || {};
+          const sentBackHere = r.sentBack?.toStage === "warden_lai";
           return (
             <Card key={classId} className="p-4">
+              {sentBackHere && <SentBackBanner record={r} />}
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-medium text-slate-800">{cls?.name}</p>
                 {locked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
@@ -972,6 +1368,7 @@ function LAIScreen({ state, date, me, runAction }) {
                     </button>
                   );
                 })}
+                {list.length === 0 && <p className="text-sm text-slate-400 sm:col-span-3">No students match your search in this class.</p>}
               </div>
             </Card>
           );
@@ -982,18 +1379,10 @@ function LAIScreen({ state, date, me, runAction }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* DO screen: headcount \u2192 verify each reason \u2192 approve             */
+/* 5f. Discipline Officer                                              */
 /* ---------------------------------------------------------------- */
-// One card per class on the DO's screen — this is where the headcount →
-// verify-each-reason → approve sequence from the workflow actually lives.
-// `headcount` is local state (not read from `record` on every render) so
-// typing in the box doesn't need a network call on every keystroke; only
-// clicking "Save" sends it. `allVerified` recomputes on every render from
-// `record.doVerified`, which is why the Approve button enables itself the
-// instant the last reason is confirmed, with no extra code needed for that.
 function DoClassCard({ c, record, date, students, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
-  const [draftReasons, setDraftReasons] = useState({});
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
   const list = Object.entries(combined).map(([sid, meta]) => ({
     student: students.find((s) => s.id === sid), meta,
@@ -1008,15 +1397,12 @@ function DoClassCard({ c, record, date, students, runAction }) {
 
   return (
     <Card className="p-4">
-      {/* Header: class name + a one-word status badge */}
+      <SentBackBanner record={record} />
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium text-slate-800">{c.name}</p>
         {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">{!headcountSaved ? "Enter headcount to continue" : "Needs reason verification"}</Badge>}
       </div>
 
-      {/* Step 1 of 3: headcount. The Save button only appears once you've
-          typed something different from what's already stored, so it
-          doesn't just sit there doing nothing on every render. */}
       <Field label="Headcount present">
         <div className="flex gap-2">
           <input type="number" min="0" disabled={approved} className={`${inputCls} w-28`} value={headcount} onChange={(e) => setHeadcount(e.target.value)} />
@@ -1026,30 +1412,23 @@ function DoClassCard({ c, record, date, students, runAction }) {
         </div>
       </Field>
 
-      {/* Everything below is hidden until headcount is saved — this is the
-          "headcount first, then the list" ordering from the workflow. */}
       {!headcountSaved ? (
         <p className="mt-3 text-sm text-slate-400">The absentee list appears once you save today's headcount.</p>
       ) : (
         <>
-          {/* Step 2a: students already "away" — shown for context (they count
-              toward the absent total) but need no verification here */}
           {away.length > 0 && (
             <div className="mt-3">
               <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Already away — no action needed</p>
               <ul className="space-y-1">
                 {away.map((s) => (
                   <li key={s.id} className="flex justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-sm text-slate-600">
-                    <span>{s.name} ({s.roll})</span><span className="text-xs text-slate-400">{s.awayReason} since {s.awaySince}</span>
+                    <span>{s.name} ({s.roll})</span><span className="text-xs text-slate-400">{s.awayReason} since {formatDMY(s.awaySince)}</span>
                   </li>
                 ))}
               </ul>
             </div>
           )}
 
-          {/* Step 2b: today's fresh absentees — the actual work. Each gets a
-              row of reason buttons; clicking one calls saveReason immediately
-              (no separate "save" step, unlike the headcount field above). */}
           {list.length === 0 ? (
             <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
           ) : (
@@ -1076,31 +1455,24 @@ function DoClassCard({ c, record, date, students, runAction }) {
             </div>
           )}
 
-          {/* Step 3: approve. Disabled until every fresh absentee has a
-              verified reason — `allVerified` is recalculated on every
-              render, so this enables itself the instant the last one is
-              confirmed, with no extra wiring needed. */}
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Btn variant="success" disabled={approved || !allVerified} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
               <CheckCircle2 size={14} /> {allVerified ? "Approve list" : "Verify all reasons first"}
             </Btn>
+            {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason), "Sent back to Warden/LAI")} />}
           </div>
         </>
       )}
     </Card>
   );
 }
-// The DO's screen: one DoClassCard per class on their assigned floor(s).
-// `poolmates` finds other DOs who share at least one floor with this DO,
-// purely to show a friendly "you're sharing this with..." note — it has no
-// effect on what they're allowed to do; the real pooling logic (either one
-// can approve) lives entirely on the server.
+
 function DOScreen({ state, date, me, runAction }) {
-  const floorClasses = state.classes.filter((c) => (me.floorIds || []).includes(c.floorId));
+  const floorClasses = state.classes.filter((c) => (me.floorIds || []).includes(c.collegeFloorId));
   const poolmates = state.staff.filter((s) => s.role === "DO" && s.id !== me.id && (s.floorIds || []).some((f) => (me.floorIds || []).includes(f)));
   return (
     <div>
-      <SectionTitle icon={Phone} title="Verify & approve" subtitle="Two DOs cover this floor — whichever of you approves first completes it for both." />
+      <SectionTitle icon={Phone} title="Verify & approve" subtitle="Two or more DOs can cover the same floor — split the classes between yourselves however works, or overlap freely; whoever approves a class first completes it for everyone." />
       {poolmates.length > 0 && <p className="mb-4 text-xs text-slate-400">Sharing this floor with: {poolmates.map((p) => p.name).join(", ")}</p>}
       <div className="space-y-4">
         {floorClasses.map((c) => (
