@@ -1,9 +1,11 @@
 # Attendance & Hostel Management System
 
-A full-stack app for the workflow: DB Manager proposes changes → AO approves →
-daily attendance flows Warden/LAI → DO → Incharge Teacher → Coordinator → AO →
-Principal's report, with pooled DO/Incharge Teacher coverage per floor and a
-deadline cutoff that auto-publishes unfinished lists with a tag.
+A full-stack app for the workflow: Principal registers and sets up
+leadership → DB Manager proposes changes → AO approves → daily attendance
+flows Warden/LAI → DO → Incharge Teacher → Coordinator → Principal's
+report, with pooled DO/Incharge Teacher coverage per floor, send-back for
+corrections, and a deadline cutoff that auto-publishes unfinished lists
+with a tag (never bypassing the DO's verification step).
 
 ```
 attendance-fullstack/
@@ -33,7 +35,7 @@ cp .env.example .env
 # paste your DATABASE_URL (pooled) and DIRECT_URL (direct) into .env, and set a random JWT_SECRET
 npm install
 npx prisma migrate dev --name init
-npm run seed          # creates demo users, students, rooms, classes
+npm run seed          # optional: creates a starter hostel/college/student structure, no accounts
 npm run dev           # API on http://localhost:4000
 ```
 If `prisma migrate dev` fails with `P1001: Can't reach database server`,
@@ -51,19 +53,29 @@ npm install
 npm run dev             # opens http://localhost:5173
 ```
 
-### 1.4 Log in
-All seeded accounts use the password `password123`:
+### 1.4 First-time setup (no seeded accounts anymore)
+There are no demo logins — every account is created through the app itself:
 
-| Username | Role |
-|---|---|
-| principal | Principal |
-| ao | AO |
-| coordinator | Coordinator |
-| dbm | Database Manager |
-| warden1, warden2 | Warden |
-| do1, do2 | Discipline Officer (pooled per floor) |
-| teacher1, teacher2, teacher3 | Incharge Teacher (teacher3 starts inactive) |
-| lai1, lai2 | Local Attendance Incharge |
+1. Open the app. On the login screen, click **"Register as Principal"** and
+   create that one account (your own name + a password you choose). This
+   only works once — it's rejected if a Principal already exists.
+2. Log in as Principal and open **Leadership accounts**. Create the AO,
+   Coordinator, and Database Manager — each screen shows their generated
+   4-digit login key and the shared default password (`Welcome@123`) once,
+   right after creation. Write those down.
+3. Log in as the Database Manager (key + `Welcome@123` — you'll be asked to
+   change the password immediately). Add at least one hostel/floor/room and
+   one college floor/class under **Hostels & classes**, then some students
+   under **Students** (or run `npm run seed` first for starter data instead
+   of entering it by hand).
+4. Still as Database Manager, use **Create staff account** to add a Warden,
+   an LAI, a DO, and an Incharge Teacher. Each gets a generated key shown
+   immediately, but can't log in yet.
+5. Log in as AO (created in step 2) and approve those staff requests under
+   **Master data approvals**. Now their keys work.
+
+Every account — including the ones you just created — must change its
+password on first login; that's enforced, not optional.
 
 ## 2. Push it to GitHub
 
@@ -95,8 +107,11 @@ A simple free setup: **Neon** (database, already set up in step 1.1) +
 5. Add environment variables: `DATABASE_URL` and `DIRECT_URL` (same pooled/
    direct pair from your local `.env`), `JWT_SECRET` (any long random
    string), `CORS_ORIGIN` (your Vercel URL — you can add this after step 3.2).
-6. Deploy. Once it's live, run the seed once from Render's **Shell** tab:
-   `npm run seed`.
+6. Deploy. Once it's live, open the deployed frontend URL and go through
+   the registration flow (README section 1.4) to create your Principal
+   account — there's nothing to seed for accounts. Run `npm run seed` from
+   Render's **Shell** tab only if you want the optional starter hostel/
+   class/student data.
 
 ### 3.2 Frontend on Vercel
 1. [vercel.com](https://vercel.com) → **Add New Project** → import the same
@@ -114,56 +129,66 @@ Render's free web services sleep after inactivity and take ~30–60 seconds to
 wake up on the first request — fine for a pilot, worth upgrading before
 real daily use at a fixed 11:00 AM deadline.
 
-## 4. What's new since v1
+## 4. How the workflow works today
 
-- **Status views anytime, not just when it's your turn**: Coordinator and
-  Incharge Teacher now have a "status" tab showing the same live table
-  Principal sees (Incharge Teacher's is scoped to their floor). AO has a
-  "Hierarchy status" tab showing who covers what, and flags gaps (a room
-  with no Warden, a floor with no DO, an inactive account, etc.). Every
-  status view now has a date picker so you can look back at past days, not
-  just today.
-- **Status badges say which stage is holding things up** ("Pending —
-  Discipline Officer", "Pending — Coordinator", etc.) instead of a generic
-  "In progress," so anyone looking at the table can see exactly who to
-  chase.
-- **Cutoff no longer bypasses Warden/LAI/DO verification.** The deadline
-  cutoff can still auto-pass a list stuck at Teacher, Coordinator, or AO,
-  but a list still waiting on the DO stays untouched \u2014 it has no tag and
-  isn't published until a person actually verifies it.
-- **Reasons for absence, and a persistent "away" status.** A Warden must
-  pick a reason when marking someone absent. Picking "Went home" doesn't
-  write to today's record at all \u2014 it sets a flag on the student that
-  counts them absent automatically every day until a Warden taps "Mark
-  reported." LAIs still just flag absentees with no reason.
-- **DO workflow now: headcount \u2192 verify each reason \u2192 approve.** The
-  absentee list only appears after the headcount is saved. For each
-  absentee, the DO confirms the Warden's reason or \u2014 for LAI-reported day
-  scholars, who arrive with no reason \u2014 enters one after a phone call.
-  Approval is blocked until every absentee has a verified reason.
+This has gone through several rounds of changes since the first version;
+this section describes the **current** behavior rather than the history of
+how it got here (see `git log` if you want that history).
 
-If you already ran `prisma migrate dev` against an older schema, run it
-again to pick up the new `Student.awayReason` / `awaySince` and
-`AttendanceRecord.doVerified` fields:
-```bash
-cd server
-npx prisma migrate dev --name add-reasons-and-away-status
-npm run seed   # optional: re-seed to see the demo away-student
-```
+- **Login is a 4-digit key + password, everywhere.** No usernames, no role
+  dropdown — the key alone identifies who you are.
+- **Account setup, in order:** Principal registers once → Principal creates
+  AO/Coordinator/Database Manager → Database Manager creates Warden/LAI/
+  DO/Incharge Teacher accounts → AO approves each one before it can log in.
+  Every account starts on the same default password (`Welcome@123`) and
+  must change it on first login.
+- **Two separate structures, both casually called "floor."** Hostel →
+  Floor → Room (Wardens attach to rooms) and College Floor → Class/Batch
+  (DOs and Incharge Teachers attach to floors, pooled). They're unrelated
+  hierarchies even though people call both "floor" out loud.
+- **The daily chain is three stages, not four:** DO → Incharge Teacher →
+  Coordinator → published straight to the Principal. AO does not approve
+  daily attendance at all — only master-data changes, new staff accounts,
+  and freezing/unfreezing accounts.
+- **Send-back**: instead of approving, a DO/Teacher/Coordinator can bounce
+  a class's record back exactly one stage with a required reason. Whoever
+  receives it can fix and re-approve, push it back further themselves, or
+  just re-confirm unchanged.
+- **The deadline cutoff** (moved to Coordinator's screen) can force-publish
+  anything stuck at Teacher or Coordinator, tagged "auto-passed" — but
+  never bypasses the DO stage, since that's where real verification (phone
+  calls, headcounts) happens.
+- **Absence reasons and the persistent "away" status**: a Warden must pick
+  a reason when marking someone absent. Picking "Went home" doesn't touch
+  today's record at all — it flags the student as away, counting them
+  absent automatically every day until a Warden taps "Mark reported." LAIs
+  flag absentees with no reason; the DO fills one in after a phone call.
+- **AO can freeze any account** except the Principal's — frozen accounts
+  simply can't log in until unfrozen.
+- **Search boxes** on the Database Manager's Students screen and the
+  Warden/LAI screens filter their (potentially long) lists client-side.
+- **The Database Manager has a read-only Absentees view** — pick a date,
+  see roll number/name/class for everyone absent, nothing else.
 
-## 5. What's simplified for v1
+## 5. What's simplified for now
 
 - One combined `/api/state` endpoint returns the whole snapshot rather than
   many small paginated endpoints — fine at one-institution scale, worth
   splitting up if the student count grows very large.
-- Only "today" is used for daily attendance in the UI; the data model
-  already supports any date, so a date picker is a small addition.
 - Assignment scope (rooms/floors/classes) is stored as plain ID arrays on
   the user rather than a join table — simpler to reason about at this size.
+- No Excel import/export yet for bulk-adding students, even though the data
+  model (`bulk_add_students` change type) already supports it — a template
+  download, upload parser, and export button are the remaining pieces.
+- No dedicated mobile-layout pass yet, even though most controls already
+  wrap and stack reasonably on a narrow screen.
 
 ## 6. Next steps worth considering
 
-- Email/SMS reminders before the cutoff time.
-- A proper admin UI for creating floors (currently seed-only).
-- Password reset flow (currently demo passwords only).
+- Excel template download + bulk upload + export for the Students screen.
+- A dedicated mobile-responsive pass, given most staff will use this on a phone.
+- Email/SMS reminders before the daily deadline.
+- Self-service "forgot password" flow — right now, a locked-out person needs
+  an AO/Principal to freeze-and-recreate their account or manually reset it
+  in the database.
 - Audit history view showing full before/after diffs on master-data edits.
