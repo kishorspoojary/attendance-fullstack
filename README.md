@@ -169,6 +169,19 @@ how it got here (see `git log` if you want that history).
   Warden/LAI screens filter their (potentially long) lists client-side.
 - **The Database Manager has a read-only Absentees view** — pick a date,
   see roll number/name/class for everyone absent, nothing else.
+- **Excel template, bulk import, and export** on the Students screen — the
+  template includes a reference sheet listing the exact class and room
+  names already in the system, since import matches rows to them by name.
+  A bulk upload becomes one PendingChange for the AO either way, same as
+  every other Database Manager action.
+- **DO's own verification now happens in two separate windows**, matching
+  when a DO can actually act: a quick classroom check (confirm who's really
+  absent, no calls needed) now, and a phone-call round to record the actual
+  reason later. Approval needs both, tracked independently.
+- **Students carry an explicit "local" tag** (day scholar vs. hosteller)
+  instead of inferring it from whether a room is assigned. The LAI's list
+  now correctly excludes hostellers in their class, who are the Warden's
+  responsibility instead.
 
 ## 5. What's simplified for now
 
@@ -177,15 +190,13 @@ how it got here (see `git log` if you want that history).
   splitting up if the student count grows very large.
 - Assignment scope (rooms/floors/classes) is stored as plain ID arrays on
   the user rather than a join table — simpler to reason about at this size.
-- No Excel import/export yet for bulk-adding students, even though the data
-  model (`bulk_add_students` change type) already supports it — a template
-  download, upload parser, and export button are the remaining pieces.
+- Excel import is students-only for now — no bulk import/export yet for
+  staff accounts or hostel/college structure.
 - No dedicated mobile-layout pass yet, even though most controls already
   wrap and stack reasonably on a narrow screen.
 
 ## 6. Next steps worth considering
 
-- Excel template download + bulk upload + export for the Students screen.
 - A dedicated mobile-responsive pass, given most staff will use this on a phone.
 - Email/SMS reminders before the daily deadline.
 - Self-service "forgot password" flow — right now, a locked-out person needs

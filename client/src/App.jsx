@@ -25,7 +25,7 @@ import {
   ClipboardCheck, ShieldCheck, GraduationCap, Bed, UserCog, ListChecks,
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
-  Undo2, Search, UserPlus, Snowflake, KeyRound, Building2,
+  Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -881,6 +881,23 @@ function StudentsAdmin({ state, runAction }) {
   const [isLocal, setIsLocal] = useState(true);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be picked again after fixing it
+    if (!file) return;
+    setImportBusy(true); setImportResult(null);
+    try {
+      const result = await api.importStudents(file);
+      setImportResult(result);
+      if (result.addedCount > 0) await runAction(() => Promise.resolve(), `${result.addedCount} student(s) sent to AO for approval`);
+    } catch (e2) {
+      setImportResult({ addedCount: 0, warnings: [], errors: [e2.message] });
+    }
+    setImportBusy(false);
+  };
 
   const submitAdd = () => {
     if (!name || !roll || !classId) return;
@@ -915,6 +932,34 @@ function StudentsAdmin({ state, runAction }) {
           Local student (day scholar) — the Local Attendance Incharge handles them, not a Warden
         </label>
         <div className="mt-3"><Btn onClick={submitAdd}><Plus size={14} /> Send for AO approval</Btn></div>
+      </Card>
+
+      <Card className="mb-6 p-4">
+        <p className="mb-1 text-sm font-semibold text-slate-700">Add many at once with Excel</p>
+        <p className="mb-3 text-xs text-slate-500">Download the template, fill it in (it includes a reference sheet with the exact class and room names already in the system), then upload it back. Everything you upload still goes to the AO for approval, just as one request instead of many.</p>
+        <div className="flex flex-wrap gap-2">
+          <Btn variant="outline" onClick={() => api.downloadStudentTemplate()}><FileDown size={14} /> Download template</Btn>
+          <Btn variant="outline" onClick={() => api.exportStudents()}><FileDown size={14} /> Export current list</Btn>
+          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#12324D] px-3.5 py-2 text-sm font-medium text-white hover:bg-[#0d2438]">
+            {importBusy ? <Loader2 className="animate-spin" size={14} /> : <FileUp size={14} />} Upload filled sheet
+            <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={importBusy} />
+          </label>
+        </div>
+        {importResult && (
+          <div className="mt-3 space-y-2 text-sm">
+            {importResult.addedCount > 0 && <p className="text-emerald-700">{importResult.addedCount} student(s) ready, pending AO approval.</p>}
+            {importResult.warnings?.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-amber-800">
+                {importResult.warnings.map((w, i) => <p key={i}>{w}</p>)}
+              </div>
+            )}
+            {importResult.errors?.length > 0 && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-rose-800">
+                {importResult.errors.map((e, i) => <p key={i}>{e}</p>)}
+              </div>
+            )}
+          </div>
+        )}
       </Card>
 
       <SearchBox value={search} onChange={setSearch} placeholder="Search by name, roll number, or class..." />

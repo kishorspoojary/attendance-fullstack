@@ -14,6 +14,7 @@ import { changesRouter } from "./routes/changes.js";
 import { attendanceRouter } from "./routes/attendance.js";
 import { studentsRouter } from "./routes/students.js";
 import { usersRouter } from "./routes/users.js";
+import { excelRouter } from "./routes/excel.js";
 
 const app = express();
 
@@ -40,6 +41,7 @@ app.use("/api", changesRouter);
 app.use("/api", attendanceRouter);
 app.use("/api", studentsRouter);
 app.use("/api", usersRouter);
+app.use("/api", excelRouter);
 
 // A catch-all error handler. If any route handler throws an unexpected
 // error (a bug, a database hiccup, etc.), Express routes it here instead of

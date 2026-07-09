@@ -29,6 +29,40 @@ async function request(path, options = {}) {
   return data;
 }
 
+// Excel downloads (template/export) return a file, not JSON — fetch as a
+// blob and trigger a normal browser "Save As" via a throwaway link, rather
+// than trying to squeeze this through the JSON-shaped `request()` above.
+async function downloadFile(path, filename) {
+  const res = await fetch(`${BASE}/api${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Download failed");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// File upload needs multipart/form-data, which is a completely different
+// request shape than every other call in this file — no JSON body, and the
+// browser sets the Content-Type (with the right boundary) itself as long as
+// we don't set one ourselves.
+async function uploadFile(path, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${BASE}/api${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Upload failed");
+  return data;
+}
+
 export const api = {
   // ---- Registration & leadership (Principal only) ----
   registerPrincipal: (name, password) => request("/auth/register-principal", { method: "POST", body: { name, password } }),
@@ -64,6 +98,11 @@ export const api = {
   // ---- Account freeze (AO only) ----
   freezeUser: (id) => request(`/users/${id}/freeze`, { method: "POST" }),
   unfreezeUser: (id) => request(`/users/${id}/unfreeze`, { method: "POST" }),
+
+  // ---- Excel template / import / export (Database Manager only) ----
+  downloadStudentTemplate: () => downloadFile("/excel/students/template", "student-import-template.xlsx"),
+  exportStudents: () => downloadFile("/excel/students/export", "students-export.xlsx"),
+  importStudents: (file) => uploadFile("/excel/students/import", file),
 
   // ---- Local token storage ----
   setToken: (token) => localStorage.setItem("attendance_token", token),
