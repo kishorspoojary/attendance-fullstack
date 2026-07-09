@@ -79,7 +79,72 @@ attendanceRouter.post(
 
 // --------------------------------------------------------------------------
 // STEP 2 — DO confirms or enters the reason for one absentee. Required for
-// every absentee before the DO can approve (enforced in /approve below).
+// --------------------------------------------------------------------------
+// STEP 2, WINDOW 1 — the classroom check. A DO walking into a classroom
+// mid-period can tell who's physically absent right then, but can't call
+// anyone's home or warden in that moment — that happens later, in Window 2
+// below. This step is just "yes, this reported absentee really is absent"
+// (or the opposite: the report was wrong and they're actually here).
+// --------------------------------------------------------------------------
+attendanceRouter.post("/attendance/:date/:classId/confirm", requireAuth, requireRole("DO"), async (req, res) => {
+  const { date, classId } = req.params;
+  const { studentId } = req.body || {};
+  if (!studentId) return res.status(400).json({ error: "studentId is required" });
+
+  const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!classroom || !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    return res.status(403).json({ error: "This class's floor isn't assigned to you" });
+  }
+
+  const record = await getOrCreateRecord(date, classId);
+  if (record.doApproved) return res.status(409).json({ error: "Already approved" });
+
+  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+  if (!combined[studentId]) return res.status(400).json({ error: "That student isn't on today's absentee list" });
+
+  const doConfirmed = { ...(record.doConfirmed || {}), [studentId]: { by: req.user.id, byName: req.user.name, at: nowTs() } };
+  const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doConfirmed } });
+  res.json({ record: updated });
+});
+
+// The classroom check can also go the other way: a student the Warden or
+// LAI reported absent turns out to actually be sitting right there. This
+// removes them from the absentee list entirely rather than "confirming"
+// them, and clears out any confirmation/reason they'd already picked up.
+attendanceRouter.post("/attendance/:date/:classId/correct-presence", requireAuth, requireRole("DO"), async (req, res) => {
+  const { date, classId } = req.params;
+  const { studentId } = req.body || {};
+  if (!studentId) return res.status(400).json({ error: "studentId is required" });
+
+  const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!classroom || !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    return res.status(403).json({ error: "This class's floor isn't assigned to you" });
+  }
+
+  const record = await getOrCreateRecord(date, classId);
+  if (record.doApproved) return res.status(409).json({ error: "Already approved" });
+
+  const wardenAbsences = { ...(record.wardenAbsences || {}) };
+  const laiAbsences = { ...(record.laiAbsences || {}) };
+  const doConfirmed = { ...(record.doConfirmed || {}) };
+  const doVerified = { ...(record.doVerified || {}) };
+  delete wardenAbsences[studentId];
+  delete laiAbsences[studentId];
+  delete doConfirmed[studentId];
+  delete doVerified[studentId];
+
+  const updated = await prisma.attendanceRecord.update({
+    where: { id: record.id },
+    data: { wardenAbsences, laiAbsences, doConfirmed, doVerified },
+  });
+  res.json({ record: updated });
+});
+
+// --------------------------------------------------------------------------
+// STEP 2, WINDOW 2 — later, on the phone: the DO calls home (or the
+// Warden) and records the actual reason. Only possible once a student has
+// been confirmed absent in Window 1 above — you can't have a reason for
+// someone you haven't actually confirmed is absent yet.
 // --------------------------------------------------------------------------
 attendanceRouter.post("/attendance/:date/:classId/reason", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
@@ -96,6 +161,9 @@ attendanceRouter.post("/attendance/:date/:classId/reason", requireAuth, requireR
 
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
   if (!combined[studentId]) return res.status(400).json({ error: "That student isn't on today's absentee list" });
+  if (!record.doConfirmed?.[studentId]) {
+    return res.status(400).json({ error: "Confirm this student absent in the classroom check first" });
+  }
 
   const doVerified = { ...(record.doVerified || {}), [studentId]: { reason, verifiedBy: req.user.id, verifiedByName: req.user.name, at: nowTs() } };
   const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doVerified } });
@@ -158,9 +226,13 @@ attendanceRouter.post(
     }
     if (stageKey === "doApproved") {
       const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+      const unconfirmed = Object.keys(combined).filter((sid) => !record.doConfirmed?.[sid]);
+      if (unconfirmed.length > 0) {
+        return res.status(400).json({ error: `Confirm every absentee in the classroom check first (${unconfirmed.length} remaining)` });
+      }
       const unverified = Object.keys(combined).filter((sid) => !record.doVerified?.[sid]);
       if (unverified.length > 0) {
-        return res.status(400).json({ error: `Verify the reason for every absentee first (${unverified.length} remaining)` });
+        return res.status(400).json({ error: `Call and confirm the reason for every absentee first (${unverified.length} remaining)` });
       }
     }
 

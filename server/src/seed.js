@@ -51,7 +51,7 @@ async function main() {
     ["Vikas Nair", "10B-06", class10B.id, rooms["103"].id],
   ];
   await prisma.student.createMany({
-    data: students.map(([name, roll, classId, roomId]) => ({ name, roll, classId, roomId })),
+    data: students.map(([name, roll, classId, roomId]) => ({ name, roll, classId, roomId, isLocal: !roomId })),
   });
 
   console.log("Done. Created: 1 hostel, 1 hostel floor, 4 rooms, 1 college floor, 2 classes, 12 students.");

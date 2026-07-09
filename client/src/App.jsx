@@ -61,7 +61,7 @@ function recordTag(rec) {
 }
 function emptyRecord() {
   return {
-    wardenAbsences: {}, laiAbsences: {}, headcount: null, doVerified: {},
+    wardenAbsences: {}, laiAbsences: {}, headcount: null, doConfirmed: {}, doVerified: {},
     doApproved: null, teacherApproved: null, coordinatorApproved: null,
     forcedPublish: false, skippedStages: [], sentBack: null,
   };
@@ -878,17 +878,18 @@ function roomOptions(state) {
 function StudentsAdmin({ state, runAction }) {
   const [name, setName] = useState(""); const [roll, setRoll] = useState("");
   const [classId, setClassId] = useState(""); const [roomId, setRoomId] = useState("");
+  const [isLocal, setIsLocal] = useState(true);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");
 
   const submitAdd = () => {
     if (!name || !roll || !classId) return;
-    runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name, roll, classId, roomId: roomId || null }), "Sent to AO for approval");
-    setName(""); setRoll(""); setClassId(""); setRoomId("");
+    runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name, roll, classId, roomId: roomId || null, isLocal }), "Sent to AO for approval");
+    setName(""); setRoll(""); setClassId(""); setRoomId(""); setIsLocal(true);
   };
   const submitDelete = (s) => runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
   const submitEdit = () => {
-    runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: editing.roomId || null } }), "Sent to AO for approval");
+    runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: editing.roomId || null, isLocal: editing.isLocal } }), "Sent to AO for approval");
     setEditing(null);
   };
 
@@ -907,8 +908,12 @@ function StudentsAdmin({ state, runAction }) {
           <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label="Roll number"><input className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
           <Field label="Class / batch"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-          <Field label="Hostel room (optional)"><Select value={roomId} onChange={setRoomId} options={roomOptions(state)} /></Field>
+          <Field label="Hostel room (optional)"><Select value={roomId} onChange={(v) => { setRoomId(v); setIsLocal(!v); }} options={roomOptions(state)} /></Field>
         </div>
+        <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={isLocal} onChange={(e) => setIsLocal(e.target.checked)} />
+          Local student (day scholar) — the Local Attendance Incharge handles them, not a Warden
+        </label>
         <div className="mt-3"><Btn onClick={submitAdd}><Plus size={14} /> Send for AO approval</Btn></div>
       </Card>
 
@@ -916,7 +921,7 @@ function StudentsAdmin({ state, runAction }) {
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Roll</th><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Room</th><th className="px-4 py-2.5"></th></tr>
+            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Roll</th><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Tag</th><th className="px-4 py-2.5">Room</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {filtered.map((s) => {
@@ -926,7 +931,8 @@ function StudentsAdmin({ state, runAction }) {
                   <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                   <td className="px-4 py-2.5 text-slate-600">{s.roll}</td>
                   <td className="px-4 py-2.5 text-slate-600">{cls?.name}</td>
-                  <td className="px-4 py-2.5 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "Day scholar"}</td>
+                  <td className="px-4 py-2.5"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
+                  <td className="px-4 py-2.5 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setEditing({ ...s })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
@@ -936,7 +942,7 @@ function StudentsAdmin({ state, runAction }) {
                 </tr>
               );
             })}
-            {filtered.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No matching students.</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">No matching students.</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -950,6 +956,10 @@ function StudentsAdmin({ state, runAction }) {
               <Field label="Roll number"><input className={inputCls} value={editing.roll} onChange={(e) => setEditing({ ...editing, roll: e.target.value })} /></Field>
               <Field label="Class / batch"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
               <Field label="Room"><Select value={editing.roomId || ""} onChange={(v) => setEditing({ ...editing, roomId: v })} options={roomOptions(state)} /></Field>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={editing.isLocal} onChange={(e) => setEditing({ ...editing, isLocal: e.target.checked })} />
+                Local student (day scholar)
+              </label>
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Btn variant="ghost" onClick={() => setEditing(null)}>Cancel</Btn>
@@ -1333,7 +1343,9 @@ function WardenScreen({ state, date, me, runAction }) {
 
 function LAIScreen({ state, date, me, runAction }) {
   const classIds = me.classIds || [];
-  const students = state.students.filter((s) => classIds.includes(s.classId) && !s.awayReason);
+  // Only local students (day scholars) — hostellers in the same class are
+  // the Warden's responsibility, not the LAI's, even if they share a class.
+  const students = state.students.filter((s) => classIds.includes(s.classId) && s.isLocal && !s.awayReason);
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
   const visible = !q ? students : students.filter((s) => s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
@@ -1383,15 +1395,20 @@ function LAIScreen({ state, date, me, runAction }) {
 /* ---------------------------------------------------------------- */
 function DoClassCard({ c, record, date, students, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
+  const [subTab, setSubTab] = useState("confirm"); // "confirm" (Window 1) | "reasons" (Window 2)
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
   const list = Object.entries(combined).map(([sid, meta]) => ({
     student: students.find((s) => s.id === sid), meta,
+    confirmed: !!record.doConfirmed?.[sid],
     verified: record.doVerified?.[sid]?.reason || null,
   }));
   const away = students.filter((s) => s.classId === c.id && s.awayReason);
   const approved = !!record.doApproved;
   const headcountSaved = record.headcount != null;
-  const allVerified = list.every((item) => item.verified);
+  const confirmedCount = list.filter((i) => i.confirmed).length;
+  const reasonedCount = list.filter((i) => i.verified).length;
+  const allConfirmed = list.every((i) => i.confirmed);
+  const allReasoned = list.every((i) => i.verified);
 
   const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason));
 
@@ -1400,7 +1417,7 @@ function DoClassCard({ c, record, date, students, runAction }) {
       <SentBackBanner record={record} />
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium text-slate-800">{c.name}</p>
-        {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">{!headcountSaved ? "Enter headcount to continue" : "Needs reason verification"}</Badge>}
+        {approved ? <Badge tone="emerald"><CheckCircle2 size={12} /> Approved by {record.doApproved.byName}</Badge> : <Badge tone="amber">{!headcountSaved ? "Enter headcount to continue" : "In progress"}</Badge>}
       </div>
 
       <Field label="Headcount present">
@@ -1429,35 +1446,67 @@ function DoClassCard({ c, record, date, students, runAction }) {
             </div>
           )}
 
+          {!approved && (
+            <div className="mt-4 flex gap-2 border-b border-slate-200">
+              <button onClick={() => setSubTab("confirm")} className={`px-3 py-2 text-sm font-medium ${subTab === "confirm" ? "border-b-2 border-[#12324D] text-[#12324D]" : "text-slate-500"}`}>
+                1. Classroom check {list.length > 0 && <span className="ml-1 text-xs text-slate-400">({confirmedCount}/{list.length})</span>}
+              </button>
+              <button onClick={() => setSubTab("reasons")} className={`px-3 py-2 text-sm font-medium ${subTab === "reasons" ? "border-b-2 border-[#12324D] text-[#12324D]" : "text-slate-500"}`}>
+                2. Call & confirm reasons {list.length > 0 && <span className="ml-1 text-xs text-slate-400">({reasonedCount}/{list.length})</span>}
+              </button>
+            </div>
+          )}
+
           {list.length === 0 ? (
             <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
-          ) : (
+          ) : approved || subTab === "confirm" ? (
             <div className="mt-3 space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Verify each reason before approving</p>
-              {list.map(({ student, meta, verified }) => student && (
-                <div key={student.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI, no reason yet"}</span></span>
-                    {verified && <Badge tone="emerald"><CheckCircle2 size={11} /> Verified</Badge>}
-                  </div>
-                  {!approved && (
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {DAILY_REASONS.map((reason) => (
-                        <button key={reason} onClick={() => saveReason(student.id, reason)}
-                          className={`rounded-md border px-2 py-0.5 text-[11px] ${verified === reason ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"}`}>
-                          {reason}
-                        </button>
-                      ))}
+              {!approved && <p className="text-xs text-slate-500">Right now, in the classroom — just confirm who's really absent. No calls needed for this part.</p>}
+              {list.map(({ student, meta, confirmed }) => student && (
+                <div key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI"}</span></span>
+                  {approved ? (
+                    confirmed && <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed</Badge>
+                  ) : confirmed ? (
+                    <div className="flex items-center gap-2">
+                      <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed absent</Badge>
+                      <button className="text-xs text-slate-400 underline hover:text-rose-600" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id), "Marked present instead")}>Actually present?</button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-1.5">
+                      <Btn size="sm" variant="success" onClick={() => runAction(() => api.confirmAbsent(date, c.id, student.id))}>Confirm absent</Btn>
+                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id), "Marked present")}>Actually present</Btn>
                     </div>
                   )}
                 </div>
               ))}
             </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-slate-500">Later, after calling home or the Warden — record the actual reason for each confirmed absentee.</p>
+              {list.filter((i) => i.confirmed).map(({ student, meta, verified }) => student && (
+                <div key={student.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI, no reason yet"}</span></span>
+                    {verified && <Badge tone="emerald"><CheckCircle2 size={11} /> Verified</Badge>}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {DAILY_REASONS.map((reason) => (
+                      <button key={reason} onClick={() => saveReason(student.id, reason)}
+                        className={`rounded-md border px-2 py-0.5 text-[11px] ${verified === reason ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"}`}>
+                        {reason}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {confirmedCount === 0 && <p className="text-sm text-slate-400">Nobody's been confirmed absent yet — do the classroom check first.</p>}
+            </div>
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Btn variant="success" disabled={approved || !allVerified} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
-              <CheckCircle2 size={14} /> {allVerified ? "Approve list" : "Verify all reasons first"}
+            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
+              <CheckCircle2 size={14} /> {!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : "Approve list"}
             </Btn>
             {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason), "Sent back to Warden/LAI")} />}
           </div>

@@ -49,6 +49,8 @@ export const api = {
 
   // ---- Daily attendance workflow ----
   setAbsence: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
+  confirmAbsent: (date, classId, studentId) => request(`/attendance/${date}/${classId}/confirm`, { method: "POST", body: { studentId } }),
+  correctPresence: (date, classId, studentId) => request(`/attendance/${date}/${classId}/correct-presence`, { method: "POST", body: { studentId } }),
   verifyReason: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/reason`, { method: "POST", body: { studentId, reason } }),
   setHeadcount: (date, classId, headcount) => request(`/attendance/${date}/${classId}/headcount`, { method: "POST", body: { headcount } }),
   approveStage: (date, classId) => request(`/attendance/${date}/${classId}/approve`, { method: "POST" }),

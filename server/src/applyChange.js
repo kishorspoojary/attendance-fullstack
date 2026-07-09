@@ -16,7 +16,12 @@ export async function applyChange(prisma, change) {
   switch (change.type) {
     case "add_student":
       await prisma.student.create({
-        data: { name: p.name, roll: p.roll, classId: p.classId, roomId: p.roomId || null },
+        data: {
+          name: p.name, roll: p.roll, classId: p.classId, roomId: p.roomId || null,
+          // Explicit tag wins if the Database Manager set one; otherwise
+          // infer it from whether a hostel room was given.
+          isLocal: p.isLocal !== undefined ? p.isLocal : !p.roomId,
+        },
       });
       break;
 
@@ -25,7 +30,10 @@ export async function applyChange(prisma, change) {
     // spreadsheet would mean 200 separate things for an AO to click through.
     case "bulk_add_students":
       await prisma.student.createMany({
-        data: p.students.map((s) => ({ name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null })),
+        data: p.students.map((s) => ({
+          name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
+          isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
+        })),
       });
       break;
 
@@ -37,6 +45,7 @@ export async function applyChange(prisma, change) {
           ...(p.changes.roll !== undefined && { roll: p.changes.roll }),
           ...(p.changes.classId !== undefined && { classId: p.changes.classId }),
           ...(p.changes.roomId !== undefined && { roomId: p.changes.roomId || null }),
+          ...(p.changes.isLocal !== undefined && { isLocal: p.changes.isLocal }),
         },
       });
       break;

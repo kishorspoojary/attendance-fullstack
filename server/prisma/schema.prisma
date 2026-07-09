@@ -130,6 +130,13 @@ model Student {
   roomId  String? // null means "day scholar" — no hostel room
   room    HostelRoom? @relation(fields: [roomId], references: [id])
 
+  // Explicit "local student" (day scholar) tag. Kept as its own field rather
+  // than just inferring it from roomId being empty, because it decides who's
+  // responsible for this student day to day: a Local Attendance Incharge for
+  // local students, a Warden for hostellers. applyChange.js defaults it from
+  // roomId when a Database Manager doesn't set it explicitly (no room = local).
+  isLocal Boolean @default(true)
+
   // Persistent "away" status (e.g. went home). Once a Warden sets this, the
   // student counts as absent automatically every day — no re-marking needed —
   // until a Warden clears it via the "report back" action.
@@ -160,6 +167,15 @@ model PendingChange {
 // Each *Approved field holds a small object like
 // { by: "userId", byName: "Priya", at: "2026-07-04T09:15:00.000Z" }, or stays
 // null until that stage happens.
+//
+// The DO's own work happens in two separate windows, at two different
+// times of day, because a DO walking into a classroom mid-period can check
+// who's physically absent right then, but can't phone anyone's home or
+// warden until later:
+//   Window 1 (in the classroom): headcount + doConfirmed — "yes, this
+//     student really is absent" (or correct-presence, if they're not).
+//   Window 2 (later, on the phone): doVerified — the actual reason, only
+//     settable once a student is doConfirmed. See routes/attendance.js.
 model AttendanceRecord {
   id      String    @id @default(cuid())
   date    String // "YYYY-MM-DD"
@@ -169,7 +185,9 @@ model AttendanceRecord {
   headcount      Int? // physical count the DO enters before they can approve
   wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason} }
   laiAbsences    Json @default("{}") // { studentId: {by, byName, at, reason: null} } — LAI never sets a reason
-  doVerified     Json @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — required before doApproved
+
+  doConfirmed Json @default("{}") // { studentId: {by, byName, at} } — Window 1: confirmed absent in the classroom
+  doVerified  Json @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — Window 2: reason after calling
 
   doApproved          Json?
   teacherApproved      Json?
