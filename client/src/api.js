@@ -65,6 +65,7 @@ async function uploadFile(path, file) {
 
 export const api = {
   // ---- Registration & leadership (Principal only) ----
+  principalExists: () => request("/auth/principal-exists"),
   registerPrincipal: (name, password) => request("/auth/register-principal", { method: "POST", body: { name, password } }),
   createLeadership: (name, role) => request("/auth/leadership", { method: "POST", body: { name, role } }),
 
@@ -103,6 +104,7 @@ export const api = {
   downloadStudentTemplate: () => downloadFile("/excel/students/template", "student-import-template.xlsx"),
   exportStudents: () => downloadFile("/excel/students/export", "students-export.xlsx"),
   importStudents: (file) => uploadFile("/excel/students/import", file),
+  exportAbsentees: (date) => downloadFile(`/excel/absentees/export?date=${date}`, `absentees-${date}.xlsx`),
 
   // ---- Local token storage ----
   setToken: (token) => localStorage.setItem("attendance_token", token),

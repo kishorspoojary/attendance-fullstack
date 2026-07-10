@@ -76,6 +76,41 @@ excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER")
   await sendWorkbook(res, workbook, "students-export.xlsx");
 });
 
+// Everyone absent on a given date — same roll/name/class shape as the
+// Database Manager's read-only Absentees view, combining Warden/LAI-reported
+// absentees for that date with students currently flagged "away".
+excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: "date is required" });
+
+  const [records, classes, students] = await Promise.all([
+    prisma.attendanceRecord.findMany({ where: { date } }),
+    prisma.classroom.findMany(),
+    prisma.student.findMany(),
+  ]);
+  const recordByClassId = Object.fromEntries(records.map((r) => [r.classId, r]));
+
+  const rows = [];
+  for (const c of classes) {
+    const r = recordByClassId[c.id];
+    const ids = new Set([...Object.keys(r?.wardenAbsences || {}), ...Object.keys(r?.laiAbsences || {})]);
+    students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
+    for (const sid of ids) {
+      const student = students.find((s) => s.id === sid);
+      if (student) rows.push({ roll: student.roll, name: student.name, className: c.name });
+    }
+  }
+  rows.sort((a, b) => a.className.localeCompare(b.className) || a.roll.localeCompare(b.roll));
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Absentees");
+  sheet.addRow(["Roll Number", "Name", "Class / Batch"]).font = { bold: true };
+  rows.forEach((r) => sheet.addRow([r.roll, r.name, r.className]));
+  sheet.columns.forEach((col) => { col.width = 20; });
+
+  await sendWorkbook(res, workbook, `absentees-${date}.xlsx`);
+});
+
 // Reads an uploaded spreadsheet, resolves each row's class/hostel/floor/room
 // names against what's actually in the database, and — if anything resolved
 // — creates one PendingChange for an AO to approve. Rows with a bad or

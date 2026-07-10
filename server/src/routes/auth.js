@@ -10,6 +10,15 @@ import { DEFAULT_PASSWORD, LEADERSHIP_ROLES } from "../constants.js";
 
 export const authRouter = Router();
 
+// Lets the login screen decide whether to default to "Register as Principal"
+// or "Log in" without guessing — public (no auth yet, by definition), and
+// reveals nothing beyond the one bit of state register-principal already
+// leans on to refuse a second registration.
+authRouter.get("/principal-exists", async (req, res) => {
+  const existing = await prisma.user.findFirst({ where: { role: "PRINCIPAL" } });
+  res.json({ exists: !!existing });
+});
+
 // One-time bootstrap: the very first person to use this app registers
 // themselves as Principal. Deliberately refuses if a Principal already
 // exists, so this can't be used to create a second one later — everyone

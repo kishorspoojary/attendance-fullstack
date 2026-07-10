@@ -194,13 +194,26 @@ function SendBackButton({ onSend }) {
 /* 3. Login, Registration, and mandatory password change              */
 /* ---------------------------------------------------------------- */
 
-// Shown before anyone's logged in. Defaults to the login form; a small
-// link flips to registration for the one-time "first person to ever use
-// this app" bootstrap. If someone mistakenly tries to register when a
-// Principal already exists, the server just rejects it with a clear
-// message — no separate check is needed here to decide which to show.
+// Shown before anyone's logged in. Checks once whether a Principal already
+// exists to decide the default: straight to Registration for a fresh install
+// (nothing else can be done yet anyway), straight to Login afterward. A link
+// still lets either screen flip to the other on demand.
 function AuthScreen({ onLoggedIn }) {
-  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [mode, setMode] = useState(null); // "login" | "register", null while we check which to default to
+  useEffect(() => {
+    api.principalExists()
+      .then(({ exists }) => setMode(exists ? "login" : "register"))
+      .catch(() => setMode("login")); // if the check itself fails, login is the safer default
+  }, []);
+
+  if (mode === null) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-slate-50 text-slate-400">
+        <Loader2 className="animate-spin" size={20} />
+      </div>
+    );
+  }
+
   return (
     <div className="grid min-h-screen place-items-center bg-slate-50 px-4" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
       <div className="w-full max-w-sm">
@@ -614,11 +627,14 @@ function LeadershipSetup({ state, runAction }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("AO");
   const [justCreated, setJustCreated] = useState(null);
+  const [busy, setBusy] = useState(false);
   const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
 
   const submit = async () => {
-    if (!name.trim()) return;
+    if (!name.trim() || busy) return;
+    setBusy(true);
     const result = await runAction(() => api.createLeadership(name.trim(), role), "Account created");
+    setBusy(false);
     if (result) { setJustCreated(result); setName(""); }
   };
 
@@ -635,7 +651,7 @@ function LeadershipSetup({ state, runAction }) {
               <option value="DB_MANAGER">Database Manager</option>
             </select>
           </Field>
-          <div className="flex items-end"><Btn onClick={submit}><Plus size={14} /> Create account</Btn></div>
+          <div className="flex items-end"><Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <Plus size={14} />} Create account</Btn></div>
         </div>
       </Card>
       {justCreated && (
@@ -1194,6 +1210,7 @@ function CreateStaffAdmin({ state, runAction }) {
   const [role, setRole] = useState("WARDEN");
   const [scope, setScope] = useState([]);
   const [justSent, setJustSent] = useState(null);
+  const [busy, setBusy] = useState(false);
   const toggle = (arr, val) => (arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val]);
 
   const scopeOptions = role === "WARDEN" ? roomOptions(state)
@@ -1204,9 +1221,11 @@ function CreateStaffAdmin({ state, runAction }) {
   const scopeLabel = role === "WARDEN" ? "Room(s)" : role === "LAI" ? "Class(es)" : "Floor(s)";
 
   const submit = async () => {
-    if (!name.trim()) return;
+    if (!name.trim() || busy) return;
+    setBusy(true);
     const payload = { name: name.trim(), role, [scopeField]: scope };
     const result = await runAction(() => api.proposeChange("create_staff", `Create ${ROLE_LABELS[role]} account: ${name.trim()}`, payload), "Sent to AO for approval");
+    setBusy(false);
     if (result) { setJustSent({ name: name.trim(), role, key: result.change.payload.loginKey }); setName(""); setScope([]); }
   };
 
@@ -1235,7 +1254,7 @@ function CreateStaffAdmin({ state, runAction }) {
             ))}
           </div>
         </div>
-        <div className="mt-4"><Btn onClick={submit}><Plus size={14} /> Send for AO approval</Btn></div>
+        <div className="mt-4"><Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <Plus size={14} />} Send for AO approval</Btn></div>
       </Card>
 
       {justSent && (
@@ -1282,7 +1301,10 @@ function AbsenteesView({ state }) {
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <SectionTitle icon={ClipboardCheck} title="View absentees" subtitle={`${formatDMY(viewDate)} — roll number, name, and class only.`} />
-        <Field label="Date"><input type="date" max={todayStr()} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="Date"><input type="date" max={todayStr()} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+          <Btn variant="outline" onClick={() => api.exportAbsentees(viewDate)}><FileDown size={14} /> Download Excel</Btn>
+        </div>
       </div>
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">

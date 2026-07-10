@@ -23,5 +23,10 @@
   },
   "devDependencies": {
     "prisma": "^5.20.0"
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "prisma@5.22.0": true
   }
 }
