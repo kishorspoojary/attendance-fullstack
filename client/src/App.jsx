@@ -85,6 +85,15 @@ function formatDMY(isoDate) {
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+// Time-of-day greeting shown to every account right after logging in —
+// purely based on the device's local clock, so "morning" means the
+// user's morning wherever they are.
+function greetingText() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
 
 /* ---------------------------------------------------------------- */
 /* 2. Small reusable UI pieces                                        */
@@ -357,6 +366,10 @@ export default function App() {
   const [tab, setTab] = useState(null);
   const [toast, setToast] = useState(null);
   const [sessionMessage, setSessionMessage] = useState("");
+  // Greeting banner: shown once per session (page load / fresh login),
+  // dismissible with the X. Not persisted anywhere — reappearing next
+  // time they open the app is the point.
+  const [showGreeting, setShowGreeting] = useState(true);
   const date = todayStr();
 
   // The one function every mutation in this app goes through: call the
@@ -469,6 +482,27 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Greeting banner — every account sees this after logging in, with a
+          time-of-day greeting and who they're logged in as. Dismissible;
+          comes back on the next login/page load. */}
+      {showGreeting && (
+        <div className="border-b border-slate-200 bg-white px-4 py-3 sm:px-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-display text-base font-semibold text-slate-800">
+                {greetingText()}, {me.name.split(" ")[0]}! 👋
+              </p>
+              <p className="text-xs text-slate-500">
+                You're logged in as {ROLE_LABELS[me.role]} · {formatDMY(date)}
+              </p>
+            </div>
+            <button onClick={() => setShowGreeting(false)} className="mt-0.5 text-slate-300 hover:text-slate-500" aria-label="Dismiss greeting">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-4 p-3 sm:gap-5 sm:p-5 md:flex-row">
         {/* Sidebar — a horizontally-scrolling row on mobile, a column on larger screens */}
