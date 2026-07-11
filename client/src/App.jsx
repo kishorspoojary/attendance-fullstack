@@ -220,7 +220,7 @@ function AuthScreen({ onLoggedIn }) {
       <div className="w-full max-w-sm">
         <div className="mb-5 flex items-center gap-2.5 px-1">
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#12324D] text-white"><ClipboardCheck size={17} /></div>
-          <div className="font-display text-base font-semibold text-slate-900">Attendance & Hostel System</div>
+          <div className="font-display text-base font-semibold text-slate-900">Vigil</div>
         </div>
         {mode === "login" ? <LoginForm onLoggedIn={onLoggedIn} /> : <RegisterForm onLoggedIn={onLoggedIn} />}
         {mode === "login" && !principalExists && (
@@ -487,7 +487,7 @@ export default function App() {
           <div className="flex items-center gap-2.5">
             <div className="grid h-8 w-8 place-items-center rounded-lg bg-white/10"><ClipboardCheck size={16} /></div>
             <div>
-              <div className="font-display text-[15px] font-semibold leading-tight">Attendance & Hostel System</div>
+              <div className="font-display text-[15px] font-semibold leading-tight">Vigil</div>
               <div className="text-[11px] text-white/60">{formatDMY(date)}</div>
             </div>
           </div>
