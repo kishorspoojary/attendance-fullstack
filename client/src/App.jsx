@@ -200,10 +200,11 @@ function SendBackButton({ onSend }) {
 // still lets either screen flip to the other on demand.
 function AuthScreen({ onLoggedIn }) {
   const [mode, setMode] = useState(null); // "login" | "register", null while we check which to default to
+  const [principalExists, setPrincipalExists] = useState(true); // drives whether the "Register as Principal" link is even offered
   useEffect(() => {
     api.principalExists()
-      .then(({ exists }) => setMode(exists ? "login" : "register"))
-      .catch(() => setMode("login")); // if the check itself fails, login is the safer default
+      .then(({ exists }) => { setPrincipalExists(exists); setMode(exists ? "login" : "register"); })
+      .catch(() => { setPrincipalExists(true); setMode("login"); }); // if the check itself fails, login is the safer default
   }, []);
 
   if (mode === null) {
@@ -222,13 +223,16 @@ function AuthScreen({ onLoggedIn }) {
           <div className="font-display text-base font-semibold text-slate-900">Attendance & Hostel System</div>
         </div>
         {mode === "login" ? <LoginForm onLoggedIn={onLoggedIn} /> : <RegisterForm onLoggedIn={onLoggedIn} />}
-        <p className="mt-4 text-center text-xs text-slate-400">
-          {mode === "login" ? (
-            <>First time setting up this app? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("register")}>Register as Principal</button></>
-          ) : (
-            <>Already set up? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("login")}>Log in instead</button></>
-          )}
-        </p>
+        {mode === "login" && !principalExists && (
+          <p className="mt-4 text-center text-xs text-slate-400">
+            First time setting up this app? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("register")}>Register as Principal</button>
+          </p>
+        )}
+        {mode === "register" && (
+          <p className="mt-4 text-center text-xs text-slate-400">
+            Already set up? <button className="font-medium text-[#12324D] underline" onClick={() => setMode("login")}>Log in instead</button>
+          </p>
+        )}
       </div>
     </div>
   );
