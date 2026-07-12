@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch,
+  CalendarSearch, Eye, EyeOff,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -189,6 +189,25 @@ function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, on
       <Btn size="touch" variant={variant} onClick={() => { onConfirm(); setOpen(false); }}>{confirmLabel || "Confirm"}</Btn>
       <Btn size="touch" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
     </div>
+  );
+}
+// Login keys stay hidden by default (someone glancing at a shared screen
+// shouldn't be able to read them off) — tap the eye to reveal briefly, then
+// it hides itself again rather than staying exposed indefinitely.
+function MaskedKey({ value }) {
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => {
+    if (!revealed) return;
+    const t = setTimeout(() => setRevealed(false), 4000);
+    return () => clearTimeout(t);
+  }, [revealed]);
+  return (
+    <span className="inline-flex items-center gap-1.5 font-display">
+      {revealed ? value : "••••"}
+      <button type="button" onClick={() => setRevealed((r) => !r)} className="text-slate-400 hover:text-slate-600" aria-label={revealed ? "Hide key" : "Reveal key"}>
+        {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
+      </button>
+    </span>
   );
 }
 // A small inline "type a reason, then confirm" control used for send-back
@@ -669,7 +688,11 @@ function LeadershipSetup({ state, runAction }) {
   const [role, setRole] = useState("AO");
   const [justCreated, setJustCreated] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
   const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
+  const activeCount = existing.filter((s) => s.status === "ACTIVE").length;
+  const q = query.trim().toLowerCase();
+  const filtered = q ? existing.filter((s) => s.name.toLowerCase().includes(q) || ROLE_LABELS[s.role].toLowerCase().includes(q)) : existing;
 
   const submit = async () => {
     if (!name.trim() || busy) return;
@@ -681,7 +704,10 @@ function LeadershipSetup({ state, runAction }) {
 
   return (
     <div>
-      <SectionTitle icon={UserPlus} title="Leadership accounts" subtitle="Create the AO, Coordinator, and Database Manager accounts. Each starts on the shared default password and must change it on first login." />
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle icon={UserPlus} title="Leadership accounts" subtitle="Create the AO, Coordinator, and Database Manager accounts. Each starts on the shared default password and must change it on first login." />
+        <Badge tone="slate">{existing.length} account{existing.length === 1 ? "" : "s"}, {activeCount} active</Badge>
+      </div>
       <Card className="mb-6 p-4">
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
@@ -704,18 +730,19 @@ function LeadershipSetup({ state, runAction }) {
           </p>
         </Card>
       )}
+      <SearchBox value={query} onChange={setQuery} placeholder="Search by name or role..." />
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {existing.map((s) => (
+            {filtered.map((s) => (
               <tr key={s.id}>
                 <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                 <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
-                <td className="px-4 py-2.5 font-display text-slate-600">{s.loginKey}</td>
-                <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status}</Badge></td>
+                <td className="px-4 py-2.5 text-slate-600"><MaskedKey value={s.loginKey} /></td>
+                <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge></td>
                 <td className="px-4 py-2.5 text-right">
                   {s.status === "FROZEN" ? (
                     <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
@@ -725,7 +752,9 @@ function LeadershipSetup({ state, runAction }) {
                 </td>
               </tr>
             ))}
-            {existing.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No leadership accounts yet.</td></tr>}
+            {filtered.length === 0 && (
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">{existing.length === 0 ? "No leadership accounts yet." : "No accounts match your search."}</td></tr>
+            )}
           </tbody>
         </table>
       </Card>
