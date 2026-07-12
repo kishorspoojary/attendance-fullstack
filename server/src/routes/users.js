@@ -9,8 +9,8 @@
 // ============================================================================
 import { Router } from "express";
 import { prisma } from "../db.js";
-import { requireAuth, requireRole, publicUser } from "../auth.js";
-import { FREEZABLE_ROLES } from "../constants.js";
+import { requireAuth, requireRole, publicUser, generateLoginKey } from "../auth.js";
+import { FREEZABLE_ROLES, LEADERSHIP_ROLES } from "../constants.js";
 
 export const usersRouter = Router();
 
@@ -32,4 +32,24 @@ usersRouter.post("/users/:id/unfreeze", requireAuth, requireRole("PRINCIPAL", "A
   if (target.status !== "FROZEN") return res.status(409).json({ error: "This account isn't frozen" });
   const updated = await prisma.user.update({ where: { id: target.id }, data: { status: "ACTIVE" } });
   res.json({ user: publicUser(updated) });
+});
+
+// Issues a brand-new login key for a leadership account (AO/Coordinator/DB
+// Manager) — e.g. if the old one leaked or the person forgot it. Scoped to
+// LEADERSHIP_ROLES specifically (narrower than freeze's FREEZABLE_ROLES,
+// which also covers field staff) since this is a Leadership Accounts screen
+// action, not a general account-management one.
+//
+// The new key is returned once, in this response only — it's never written
+// to a log and nothing persists it anywhere else retrievable after this call.
+usersRouter.post("/users/:id/reset-key", requireAuth, requireRole("PRINCIPAL", "AO"), async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!target) return res.status(404).json({ error: "Account not found" });
+  if (target.id === req.user.id) return res.status(403).json({ error: "You can't reset your own key" });
+  if (!LEADERSHIP_ROLES.includes(target.role)) {
+    return res.status(403).json({ error: "Only AO, Coordinator, and Database Manager keys can be reset here" });
+  }
+  const loginKey = await generateLoginKey();
+  const updated = await prisma.user.update({ where: { id: target.id }, data: { loginKey, mustChangeKey: true } });
+  res.json({ user: publicUser(updated), loginKey });
 });

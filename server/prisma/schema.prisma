@@ -68,6 +68,7 @@ model User {
   loginKey           String        @unique // 4-digit numeric string, e.g. "4821" — see auth.js keygen
   passwordHash       String
   mustChangePassword Boolean       @default(true) // true until they change the dummy/default password
+  mustChangeKey      Boolean       @default(false) // set true when a Principal/AO resets this account's key — stored flag only, not enforced anywhere yet
   role               Role
   status             AccountStatus @default(ACTIVE) // Principal + leadership start ACTIVE; DB-Manager-created staff start PENDING
   createdAt          DateTime      @default(now())

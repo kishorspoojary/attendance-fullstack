@@ -196,6 +196,10 @@ function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, on
 // it hides itself again rather than staying exposed indefinitely.
 function MaskedKey({ value }) {
   const [revealed, setRevealed] = useState(false);
+  // Re-mask on any actual key change (e.g. a reset landing while this row's
+  // key happened to be revealed) — the component doesn't unmount just
+  // because its value changed, so this can't be left to the timer alone.
+  useEffect(() => { setRevealed(false); }, [value]);
   useEffect(() => {
     if (!revealed) return;
     const t = setTimeout(() => setRevealed(false), 4000);
@@ -689,6 +693,7 @@ function LeadershipSetup({ state, runAction }) {
   const [justCreated, setJustCreated] = useState(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const [resetResult, setResetResult] = useState(null); // { name, loginKey } — shown once, then dismissed for good
   const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
   const activeCount = existing.filter((s) => s.status === "ACTIVE").length;
   const q = query.trim().toLowerCase();
@@ -700,6 +705,11 @@ function LeadershipSetup({ state, runAction }) {
     const result = await runAction(() => api.createLeadership(name.trim(), role), "Account created");
     setBusy(false);
     if (result) { setJustCreated(result); setName(""); }
+  };
+
+  const resetKey = async (s) => {
+    const result = await runAction(() => api.resetKey(s.id), "Key reset");
+    if (result) setResetResult({ name: s.name, loginKey: result.loginKey });
   };
 
   return (
@@ -730,6 +740,19 @@ function LeadershipSetup({ state, runAction }) {
           </p>
         </Card>
       )}
+      {resetResult && (
+        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-amber-800">
+              New key for <span className="font-medium">{resetResult.name}</span>: <span className="font-display font-semibold">{resetResult.loginKey}</span> —
+              share this securely. This is the only time it will be shown — write it down now.
+            </p>
+            <button onClick={() => setResetResult(null)} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
       <SearchBox value={query} onChange={setQuery} placeholder="Search by name or role..." />
 
       {/* Table on md+ screens, one stacked card per account below that —
@@ -746,12 +769,15 @@ function LeadershipSetup({ state, runAction }) {
                 <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
                 <td className="px-4 py-2.5 text-slate-600"><MaskedKey value={s.loginKey} /></td>
                 <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge></td>
-                <td className="px-4 py-2.5 text-right">
-                  {s.status === "FROZEN" ? (
-                    <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
-                  ) : (
-                    <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
-                  )}
+                <td className="px-4 py-2.5">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {s.status === "FROZEN" ? (
+                      <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
+                    ) : (
+                      <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
+                    )}
+                    <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
+                  </div>
                 </td>
               </tr>
             ))}
@@ -775,12 +801,13 @@ function LeadershipSetup({ state, runAction }) {
             <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
               <span>Key: <MaskedKey value={s.loginKey} /></span>
             </div>
-            <div className="mt-3">
+            <div className="mt-3 flex flex-wrap gap-2">
               {s.status === "FROZEN" ? (
                 <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
               ) : (
                 <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
               )}
+              <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
             </div>
           </Card>
         ))}
