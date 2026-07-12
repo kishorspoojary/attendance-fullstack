@@ -1,5 +1,6 @@
 // ============================================================================
-// AO account management: freeze/unfreeze anyone except the Principal.
+// Principal/AO account management: freeze/unfreeze anyone except the
+// Principal, and never yourself.
 //
 // Freezing reuses the exact same "status must be ACTIVE to log in" check
 // that already blocks a PENDING account (see auth.js's requireAuth) — the
@@ -13,9 +14,10 @@ import { FREEZABLE_ROLES } from "../constants.js";
 
 export const usersRouter = Router();
 
-usersRouter.post("/users/:id/freeze", requireAuth, requireRole("AO"), async (req, res) => {
+usersRouter.post("/users/:id/freeze", requireAuth, requireRole("PRINCIPAL", "AO"), async (req, res) => {
   const target = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!target) return res.status(404).json({ error: "Account not found" });
+  if (target.id === req.user.id) return res.status(403).json({ error: "You can't freeze your own account" });
   if (!FREEZABLE_ROLES.includes(target.role)) {
     return res.status(403).json({ error: "The Principal's account can't be frozen" });
   }
@@ -23,9 +25,10 @@ usersRouter.post("/users/:id/freeze", requireAuth, requireRole("AO"), async (req
   res.json({ user: publicUser(updated) });
 });
 
-usersRouter.post("/users/:id/unfreeze", requireAuth, requireRole("AO"), async (req, res) => {
+usersRouter.post("/users/:id/unfreeze", requireAuth, requireRole("PRINCIPAL", "AO"), async (req, res) => {
   const target = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!target) return res.status(404).json({ error: "Account not found" });
+  if (target.id === req.user.id) return res.status(403).json({ error: "You can't unfreeze your own account" });
   if (target.status !== "FROZEN") return res.status(409).json({ error: "This account isn't frozen" });
   const updated = await prisma.user.update({ where: { id: target.id }, data: { status: "ACTIVE" } });
   res.json({ user: publicUser(updated) });

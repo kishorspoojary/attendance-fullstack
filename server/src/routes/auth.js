@@ -72,7 +72,7 @@ authRouter.post("/login", async (req, res) => {
   if (!ok) return res.status(401).json({ error: "Incorrect login key or password" });
 
   if (user.status === "PENDING") return res.status(403).json({ error: "This account is waiting on AO approval." });
-  if (user.status === "FROZEN") return res.status(403).json({ error: "This account has been frozen by the AO." });
+  if (user.status === "FROZEN") return res.status(403).json({ error: "Account frozen — contact Principal." });
   if (user.status === "REJECTED") return res.status(403).json({ error: "This account request was not approved." });
 
   const token = signToken(user);

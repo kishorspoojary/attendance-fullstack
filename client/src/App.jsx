@@ -173,6 +173,20 @@ function SentBackBanner({ record }) {
     </div>
   );
 }
+// A small inline "click, then confirm" control for actions that need a
+// yes/no guard but not a reason — freeze/unfreeze accounts, etc. Same
+// no-modal-component approach as SendBackButton below.
+function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm }) {
+  const [open, setOpen] = useState(false);
+  if (!open) return <Btn size="sm" variant={variant} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span className="text-xs text-slate-500">Are you sure?</span>
+      <Btn size="sm" variant={variant} onClick={() => { onConfirm(); setOpen(false); }}>{confirmLabel || "Confirm"}</Btn>
+      <Btn size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+    </div>
+  );
+}
 // A small inline "type a reason, then confirm" control used for send-back
 // buttons everywhere, so it doesn't need its own modal component.
 function SendBackButton({ onSend }) {
@@ -543,7 +557,7 @@ export default function App() {
               {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} />}
               {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
               {activeTab === "approvals" && <AOApprovals state={state} onApprove={(c) => runAction(() => api.approveChange(c.id), "Approved")} onReject={(c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected")} />}
-              {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} />}
+              {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
               {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
               {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
@@ -670,7 +684,7 @@ function LeadershipSetup({ state, runAction }) {
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th></tr>
+            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {existing.map((s) => (
@@ -679,9 +693,16 @@ function LeadershipSetup({ state, runAction }) {
                 <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
                 <td className="px-4 py-2.5 font-display text-slate-600">{s.loginKey}</td>
                 <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status}</Badge></td>
+                <td className="px-4 py-2.5 text-right">
+                  {s.status === "FROZEN" ? (
+                    <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
+                  ) : (
+                    <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
+                  )}
+                </td>
               </tr>
             ))}
-            {existing.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400">No leadership accounts yet.</td></tr>}
+            {existing.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No leadership accounts yet.</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -732,8 +753,8 @@ function AOApprovals({ state, onApprove, onReject }) {
   );
 }
 
-function AOFreezeAccounts({ state, runAction }) {
-  const staff = state.staff.filter((s) => s.role !== "PRINCIPAL");
+function AOFreezeAccounts({ state, runAction, me }) {
+  const staff = state.staff.filter((s) => s.role !== "PRINCIPAL" && s.id !== me.id);
   return (
     <div>
       <SectionTitle icon={Snowflake} title="Freeze / unfreeze accounts" subtitle="Freezing pauses an account immediately — they can't log in again until you unfreeze them. Past work stays untouched." />
@@ -750,9 +771,9 @@ function AOFreezeAccounts({ state, runAction }) {
                 <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : s.status === "FROZEN" ? "rose" : "amber"}>{s.status}</Badge></td>
                 <td className="px-4 py-2.5 text-right">
                   {s.status === "FROZEN" ? (
-                    <Btn size="sm" variant="success" onClick={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")}>Unfreeze</Btn>
+                    <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
                   ) : s.status === "ACTIVE" ? (
-                    <Btn size="sm" variant="danger" onClick={() => runAction(() => api.freezeUser(s.id), "Frozen")}><Snowflake size={12} /> Freeze</Btn>
+                    <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
                   ) : (
                     <span className="text-xs text-slate-400">n/a</span>
                   )}
