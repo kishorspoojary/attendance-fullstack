@@ -731,7 +731,10 @@ function LeadershipSetup({ state, runAction }) {
         </Card>
       )}
       <SearchBox value={query} onChange={setQuery} placeholder="Search by name or role..." />
-      <Card className="overflow-x-auto">
+
+      {/* Table on md+ screens, one stacked card per account below that —
+          a table's columns get too cramped to be usable on a phone. */}
+      <Card className="hidden overflow-x-auto md:block">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
@@ -758,6 +761,33 @@ function LeadershipSetup({ state, runAction }) {
           </tbody>
         </table>
       </Card>
+
+      <div className="space-y-3 md:hidden">
+        {filtered.map((s) => (
+          <Card key={s.id} className="p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-medium text-slate-800">{s.name}</div>
+                <div className="text-xs text-slate-500">{ROLE_LABELS[s.role]}</div>
+              </div>
+              <Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge>
+            </div>
+            <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
+              <span>Key: <MaskedKey value={s.loginKey} /></span>
+            </div>
+            <div className="mt-3">
+              {s.status === "FROZEN" ? (
+                <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
+              ) : (
+                <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
+              )}
+            </div>
+          </Card>
+        ))}
+        {filtered.length === 0 && (
+          <EmptyNote text={existing.length === 0 ? "No leadership accounts yet." : "No accounts match your search."} />
+        )}
+      </div>
     </div>
   );
 }
