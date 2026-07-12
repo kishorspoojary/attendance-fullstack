@@ -123,7 +123,10 @@ function SectionTitle({ icon: Icon, title, subtitle }) {
 }
 function Btn({ children, onClick, variant = "primary", disabled, size = "md" }) {
   const base = "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition disabled:cursor-not-allowed disabled:opacity-40";
-  const sizes = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3.5 py-2 text-sm";
+  // "touch": same compact text as "sm", but a guaranteed ~40px tap height —
+  // for row actions people tap on a phone (account freeze/reset/offboard),
+  // as opposed to "sm"'s denser rows of inline text-only actions.
+  const sizes = size === "touch" ? "min-h-[40px] px-3.5 py-2 text-xs" : size === "sm" ? "px-2.5 py-1 text-xs" : "px-3.5 py-2 text-sm";
   const variants = {
     primary: "bg-[#12324D] text-white hover:bg-[#0d2438]",
     success: "bg-emerald-600 text-white hover:bg-emerald-700",
@@ -178,12 +181,12 @@ function SentBackBanner({ record }) {
 // no-modal-component approach as SendBackButton below.
 function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm }) {
   const [open, setOpen] = useState(false);
-  if (!open) return <Btn size="sm" variant={variant} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
+  if (!open) return <Btn size="touch" variant={variant} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="inline-flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Are you sure?</span>
-      <Btn size="sm" variant={variant} onClick={() => { onConfirm(); setOpen(false); }}>{confirmLabel || "Confirm"}</Btn>
-      <Btn size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+      <Btn size="touch" variant={variant} onClick={() => { onConfirm(); setOpen(false); }}>{confirmLabel || "Confirm"}</Btn>
+      <Btn size="touch" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
     </div>
   );
 }
