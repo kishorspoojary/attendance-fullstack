@@ -26,6 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
+  CalendarSearch,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -587,12 +588,23 @@ export default function App() {
 /* ---------------------------------------------------------------- */
 /* 5a. Principal                                                      */
 /* ---------------------------------------------------------------- */
+// Background + text pairing per tone — deliberately not built on top of
+// Card, since Card hardcodes bg-white/border-slate-200 and mixing that with
+// a tone's own background class would leave two conflicting utility
+// classes on the same element with no reliable winner.
+const STAT_TONES = {
+  slate: "bg-white border-slate-200 text-slate-800",
+  blue: "bg-blue-50 border-blue-100 text-blue-700",
+  emerald: "bg-emerald-50 border-emerald-100 text-emerald-700",
+  rose: "bg-rose-50 border-rose-100 text-rose-700",
+};
 function Stat({ label, value, tone = "slate" }) {
+  const cls = STAT_TONES[tone] || STAT_TONES.slate;
   return (
-    <Card className="px-4 py-3">
-      <div className={`font-display text-2xl font-bold ${tone === "emerald" ? "text-emerald-600" : tone === "rose" ? "text-rose-600" : "text-slate-800"}`}>{value}</div>
+    <div className={`rounded-2xl border px-4 py-3 shadow-sm ${cls}`}>
+      <div className="font-display text-2xl font-bold">{value}</div>
       <div className="text-xs text-slate-500">{label}</div>
-    </Card>
+    </div>
   );
 }
 function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
@@ -612,9 +624,9 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
       </div>
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Classes" value={rows.length} />
-        <Stat label="Published" value={published} />
+        <Stat label="Published" value={published} tone="blue" />
         <Stat label="Verified" value={verified} tone="emerald" />
-        <Stat label="Auto-passed" value={autoPassed} tone="rose" />
+        <Stat label="Auto-passed" value={autoPassed} tone={autoPassed > 0 ? "rose" : "slate"} />
       </div>
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -633,7 +645,15 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-slate-400">No classes in this scope yet.</td></tr>}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-4 py-10 text-center text-slate-400">
+                  <CalendarSearch className="mx-auto mb-2" size={28} />
+                  <div>No classes in this scope yet.</div>
+                  <div className="mt-1 text-xs">Try a different date, or check back after the Coordinator publishes.</div>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </Card>
