@@ -8,9 +8,10 @@
 // comes from the status value itself (FROZEN vs PENDING vs REJECTED).
 // ============================================================================
 import { Router } from "express";
+import bcrypt from "bcryptjs";
 import { prisma } from "../db.js";
 import { requireAuth, requireRole, publicUser, generateLoginKey } from "../auth.js";
-import { FREEZABLE_ROLES, LEADERSHIP_ROLES } from "../constants.js";
+import { FREEZABLE_ROLES, LEADERSHIP_ROLES, DEFAULT_PASSWORD } from "../constants.js";
 
 export const usersRouter = Router();
 
@@ -52,4 +53,47 @@ usersRouter.post("/users/:id/reset-key", requireAuth, requireRole("PRINCIPAL", "
   const loginKey = await generateLoginKey();
   const updated = await prisma.user.update({ where: { id: target.id }, data: { loginKey, mustChangeKey: true } });
   res.json({ user: publicUser(updated), loginKey });
+});
+
+// Offboards a leadership account (AO/Coordinator/DB Manager): designates a
+// successor of the same role — either an existing account or a brand-new
+// one, created inline exactly like /auth/leadership does — then freezes the
+// outgoing account. Nothing else moves: AO/Coordinator approvals are
+// role-based (not assigned to one person) and a Database Manager's past
+// PendingChange.requestedById stays as-is, since freezing the requester
+// doesn't block or hide anything an AO still needs to see — see the
+// investigation writeup for why there's genuinely no scope/assignment data
+// to reassign for these three roles, unlike a Warden's rooms or a DO's floors.
+usersRouter.post("/users/:id/offboard", requireAuth, requireRole("PRINCIPAL", "AO"), async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!target) return res.status(404).json({ error: "Account not found" });
+  if (target.id === req.user.id) return res.status(403).json({ error: "You can't offboard your own account" });
+  if (!LEADERSHIP_ROLES.includes(target.role)) {
+    return res.status(403).json({ error: "Only AO, Coordinator, and Database Manager accounts can be offboarded here" });
+  }
+
+  const { successorId, newAccount } = req.body || {};
+  let successor;
+  let successorCreds = null;
+
+  if (successorId) {
+    successor = await prisma.user.findUnique({ where: { id: successorId } });
+    if (!successor) return res.status(404).json({ error: "Successor account not found" });
+    if (successor.id === target.id) return res.status(400).json({ error: "Successor can't be the account being offboarded" });
+    if (successor.role !== target.role) return res.status(400).json({ error: "Successor must have the same role as the account being offboarded" });
+    if (successor.status !== "ACTIVE") return res.status(400).json({ error: "Successor account must be active" });
+  } else if (newAccount?.name?.trim()) {
+    const loginKey = await generateLoginKey();
+    const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+    successor = await prisma.user.create({
+      data: { name: newAccount.name.trim(), loginKey, passwordHash, role: target.role, status: "ACTIVE", mustChangePassword: true },
+    });
+    successorCreds = { loginKey, defaultPassword: DEFAULT_PASSWORD };
+  } else {
+    return res.status(400).json({ error: "Provide either successorId or newAccount.name" });
+  }
+
+  const updatedTarget = await prisma.user.update({ where: { id: target.id }, data: { status: "FROZEN" } });
+
+  res.json({ user: publicUser(updatedTarget), successor: publicUser(successor), successorCreds });
 });

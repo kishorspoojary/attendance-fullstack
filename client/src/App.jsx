@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch, Eye, EyeOff,
+  CalendarSearch, Eye, EyeOff, UserX,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -111,6 +111,24 @@ function Badge({ tone = "slate", children }) {
 function Card({ children, className = "" }) {
   return <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>;
 }
+// A real dialog overlay, for actions consequential enough that the
+// lightweight inline ConfirmButton isn't enough friction — e.g. Offboard.
+// Clicking the backdrop or the X closes it without side effects.
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="font-display text-base font-semibold text-slate-900">{title}</h3>
+          <button onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-600" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
 function SectionTitle({ icon: Icon, title, subtitle }) {
   return (
     <div className="mb-4 flex items-start gap-3">
@@ -134,6 +152,7 @@ function Btn({ children, onClick, variant = "primary", disabled, size = "md" }) 
     danger: "bg-rose-600 text-white hover:bg-rose-700",
     ghost: "bg-slate-100 text-slate-700 hover:bg-slate-200",
     outline: "border border-slate-300 text-slate-700 hover:bg-slate-50",
+    dangerOutline: "border border-rose-200 text-rose-600 hover:bg-rose-50",
   };
   return <button className={`${base} ${sizes} ${variants[variant]} w-full sm:w-auto`} onClick={onClick} disabled={disabled}>{children}</button>;
 }
@@ -212,6 +231,107 @@ function MaskedKey({ value }) {
         {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
       </button>
     </span>
+  );
+}
+// Two-step Offboard flow: pick a successor (existing same-role account, or
+// create a new one inline), see exactly what will happen, then type the
+// outgoing account's exact name to actually confirm — more friction than
+// ConfirmButton on purpose, since this freezes someone's account for good
+// until a Principal/AO manually unfreezes it.
+function OffboardModal({ target, candidates, runAction, onClose, onDone }) {
+  const [mode, setMode] = useState(candidates.length > 0 ? "existing" : "new");
+  const [successorId, setSuccessorId] = useState(candidates[0]?.id || "");
+  const [newName, setNewName] = useState("");
+  const [step, setStep] = useState("select"); // "select" | "confirm"
+  const [typedName, setTypedName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const roleLabel = ROLE_LABELS[target.role];
+  const successorName = mode === "existing" ? candidates.find((c) => c.id === successorId)?.name : newName.trim();
+  const canContinue = mode === "existing" ? !!successorId : newName.trim().length > 0;
+  const canConfirm = typedName === target.name && !busy;
+
+  const goToConfirm = () => { setError(""); setStep("confirm"); };
+  const goBack = () => { setError(""); setStep("select"); };
+
+  // Calls the API directly (rather than through runAction) so a failure's
+  // exact message can be shown inline in the modal instead of just the
+  // corner toast — runAction swallows errors internally and returns null,
+  // which is enough for the routine Freeze/Reset-key actions but not here.
+  // On success it hands the already-resolved result to runAction purely to
+  // reuse its refresh()+toast() side effects, with no extra network call.
+  const submit = async () => {
+    if (!canConfirm) return;
+    setBusy(true);
+    setError("");
+    const payload = mode === "existing" ? { successorId } : { newAccount: { name: newName.trim() } };
+    try {
+      const result = await api.offboardUser(target.id, payload);
+      await runAction(() => Promise.resolve(result), "Offboarded");
+      onDone(result);
+    } catch (e) {
+      setError(e.message || "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Offboard ${target.name}`} onClose={onClose}>
+      {step === "select" ? (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-500">{target.name} ({roleLabel}) will be frozen and can't log in again until manually unfrozen. Choose who takes over first.</p>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="radio" checked={mode === "existing"} onChange={() => setMode("existing")} disabled={candidates.length === 0} />
+              Existing {roleLabel} account
+            </label>
+            {mode === "existing" && (
+              candidates.length > 0 ? (
+                <select className={`${inputCls} ml-6 w-[calc(100%-1.5rem)]`} value={successorId} onChange={(e) => setSuccessorId(e.target.value)}>
+                  {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              ) : <p className="pl-6 text-xs text-slate-400">No other active {roleLabel} accounts exist yet.</p>
+            )}
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
+              Create a new account
+            </label>
+            {mode === "new" && (
+              <div className="ml-6 space-y-1.5">
+                <input autoFocus={candidates.length === 0} className={inputCls} placeholder="New account's name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                <p className="text-xs text-slate-500">Role: <span className="font-medium text-slate-700">{roleLabel}</span> (fixed — matches the account being offboarded)</p>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Btn size="touch" variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn size="touch" onClick={goToConfirm} disabled={!canContinue}>Continue</Btn>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <p className="mb-1 font-medium">This will:</p>
+            <ul className="list-disc space-y-0.5 pl-4">
+              <li>{mode === "new" ? <>Create a new {roleLabel} account for <span className="font-medium">{successorName}</span></> : <><span className="font-medium">{successorName}</span> becomes the acting {roleLabel}</>}</li>
+              <li>Freeze <span className="font-medium">{target.name}</span>'s account — they won't be able to log in again until unfrozen</li>
+            </ul>
+          </div>
+          {error && <p className="text-sm text-rose-600">{error}</p>}
+          <Field label={`Type "${target.name}" to confirm`}>
+            <input autoFocus className={inputCls} value={typedName} onChange={(e) => setTypedName(e.target.value)} />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Btn size="touch" variant="ghost" onClick={goBack}>Back</Btn>
+            <Btn size="touch" variant="danger" onClick={submit} disabled={!canConfirm}>
+              {busy ? <Loader2 className="animate-spin" size={14} /> : <UserX size={14} />} Offboard {target.name}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 // A small inline "type a reason, then confirm" control used for send-back
@@ -694,6 +814,8 @@ function LeadershipSetup({ state, runAction }) {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [resetResult, setResetResult] = useState(null); // { name, loginKey } — shown once, then dismissed for good
+  const [offboarding, setOffboarding] = useState(null); // the account currently in the Offboard modal, or null
+  const [offboardResult, setOffboardResult] = useState(null); // { role, successorName, creds } — only set when a new successor account was created
   const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
   const activeCount = existing.filter((s) => s.status === "ACTIVE").length;
   const q = query.trim().toLowerCase();
@@ -753,6 +875,20 @@ function LeadershipSetup({ state, runAction }) {
           </div>
         </Card>
       )}
+      {offboardResult && (
+        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-amber-800">
+              New {offboardResult.role} account created for <span className="font-medium">{offboardResult.successorName}</span> —
+              key <span className="font-display font-semibold">{offboardResult.creds.loginKey}</span>, password <span className="font-display font-semibold">{offboardResult.creds.defaultPassword}</span>.
+              Must be changed on first login. This won't be shown again.
+            </p>
+            <button onClick={() => setOffboardResult(null)} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
       <SearchBox value={query} onChange={setQuery} placeholder="Search by name or role..." />
 
       {/* Table on md+ screens, one stacked card per account below that —
@@ -778,6 +914,16 @@ function LeadershipSetup({ state, runAction }) {
                     )}
                     <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
                   </div>
+                  {/* Offboard sits on its own row with extra gap and danger-red
+                      text — deliberately separated from the routine actions
+                      above, since it's the most consequential thing here.
+                      Not offered on an already-frozen account — there's no
+                      "outgoing" transition left to make. */}
+                  {s.status === "ACTIVE" && (
+                    <div className="mt-2 flex justify-end">
+                      <Btn size="touch" variant="dangerOutline" onClick={() => setOffboarding(s)}><UserX size={12} /> Offboard</Btn>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -809,12 +955,32 @@ function LeadershipSetup({ state, runAction }) {
               )}
               <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
             </div>
+            {s.status === "ACTIVE" && (
+              <div className="mt-2">
+                <Btn size="touch" variant="dangerOutline" onClick={() => setOffboarding(s)}><UserX size={12} /> Offboard</Btn>
+              </div>
+            )}
           </Card>
         ))}
         {filtered.length === 0 && (
           <EmptyNote text={existing.length === 0 ? "No leadership accounts yet." : "No accounts match your search."} />
         )}
       </div>
+
+      {offboarding && (
+        <OffboardModal
+          target={offboarding}
+          candidates={existing.filter((a) => a.role === offboarding.role && a.id !== offboarding.id && a.status === "ACTIVE")}
+          runAction={runAction}
+          onClose={() => setOffboarding(null)}
+          onDone={(result) => {
+            setOffboarding(null);
+            if (result.successorCreds) {
+              setOffboardResult({ role: ROLE_LABELS[offboarding.role], successorName: result.successor.name, creds: result.successorCreds });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

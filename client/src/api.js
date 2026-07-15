@@ -96,10 +96,11 @@ export const api = {
   markAway: (studentId, reason) => request(`/students/${studentId}/mark-away`, { method: "POST", body: { reason } }),
   reportBack: (studentId) => request(`/students/${studentId}/report-back`, { method: "POST" }),
 
-  // ---- Account freeze / key reset (Principal or AO) ----
+  // ---- Account freeze / key reset / offboard (Principal or AO) ----
   freezeUser: (id) => request(`/users/${id}/freeze`, { method: "POST" }),
   unfreezeUser: (id) => request(`/users/${id}/unfreeze`, { method: "POST" }),
   resetKey: (id) => request(`/users/${id}/reset-key`, { method: "POST" }),
+  offboardUser: (id, body) => request(`/users/${id}/offboard`, { method: "POST", body }),
 
   // ---- Excel template / import / export (Database Manager only) ----
   downloadStudentTemplate: () => downloadFile("/excel/students/template", "student-import-template.xlsx"),
