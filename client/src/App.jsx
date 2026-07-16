@@ -72,6 +72,10 @@ const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
 };
+// Mirrors server/src/constants.js's LEADERSHIP_ROLES — reset-key and offboard
+// are only backed by the server for these three roles, so the client needs
+// the same list to decide which rows get those buttons.
+const LEADERSHIP_ROLES = ["AO", "COORDINATOR", "DB_MANAGER"];
 const DAILY_REASONS = ["Sick", "Not in room", "Other"];
 const AWAY_REASON = "Went home";
 
@@ -332,6 +336,105 @@ function OffboardModal({ target, candidates, runAction, onClose, onDone }) {
         </div>
       )}
     </Modal>
+  );
+}
+// Freeze/Unfreeze, Reset key, and Offboard for one account row — shared
+// between the Principal's Leadership screen and the AO's Freeze screen so
+// the button set, visibility rules, and layout aren't duplicated across
+// both. showResetKey/showOffboard let each caller restrict those two to
+// leadership rows only (the backend rejects them for field staff anyway).
+// layout="row" is the desktop table's single right-aligned line with a
+// divider before Offboard; layout="stack" is the mobile card's vertical
+// arrangement, every button full-width via Btn's own w-full default.
+function AccountActions({ s, runAction, showResetKey, showOffboard, onResetKey, onOffboard, layout = "row" }) {
+  // PENDING/REJECTED field-staff rows (not yet AO-approved, or declined)
+  // get neither button — freezing only makes sense once an account can
+  // actually log in in the first place.
+  const freezeBtn = s.status === "FROZEN" ? (
+    <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
+  ) : s.status === "ACTIVE" ? (
+    <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
+  ) : (
+    <span className="text-xs text-slate-400">n/a</span>
+  );
+  const resetBtn = showResetKey && <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => onResetKey(s)} />;
+  const offboardBtn = showOffboard && s.status === "ACTIVE" && (
+    <Btn size="touch" variant="dangerOutline" onClick={() => onOffboard(s)}><UserX size={12} /> Offboard</Btn>
+  );
+
+  if (layout === "row") {
+    return (
+      <div className="flex flex-nowrap items-center justify-end gap-2">
+        {freezeBtn}
+        {resetBtn}
+        {offboardBtn && <span className="mx-0.5 h-5 w-px shrink-0 bg-slate-200" aria-hidden="true" />}
+        {offboardBtn}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">{freezeBtn}{resetBtn}</div>
+      {offboardBtn}
+    </div>
+  );
+}
+// Holds the state and handlers behind Reset key and Offboard — shared by
+// any screen that renders AccountActions, so both screens dismiss/refresh
+// the same way instead of each re-implementing it.
+function useAccountLifecycle(runAction) {
+  const [resetResult, setResetResult] = useState(null); // { name, loginKey }
+  const [offboarding, setOffboarding] = useState(null); // account currently in the Offboard modal, or null
+  const [offboardResult, setOffboardResult] = useState(null); // { role, successorName, creds }
+
+  const resetKey = async (s) => {
+    const result = await runAction(() => api.resetKey(s.id), "Key reset");
+    if (result) setResetResult({ name: s.name, loginKey: result.loginKey });
+  };
+
+  const handleOffboardDone = (result) => {
+    const role = ROLE_LABELS[offboarding.role];
+    setOffboarding(null);
+    if (result.successorCreds) {
+      setOffboardResult({ role, successorName: result.successor.name, creds: result.successorCreds });
+    }
+  };
+
+  return { resetResult, setResetResult, offboarding, setOffboarding, offboardResult, setOffboardResult, resetKey, handleOffboardDone };
+}
+// The two dismissible amber banners shown after a Reset key or Offboard
+// (with a newly-created successor) — same visual pattern in both places.
+function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, onDismissOffboard }) {
+  return (
+    <>
+      {resetResult && (
+        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-amber-800">
+              New key for <span className="font-medium">{resetResult.name}</span>: <span className="font-display font-semibold">{resetResult.loginKey}</span> —
+              share this securely. This is the only time it will be shown — write it down now.
+            </p>
+            <button onClick={onDismissReset} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
+      {offboardResult && (
+        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-amber-800">
+              New {offboardResult.role} account created for <span className="font-medium">{offboardResult.successorName}</span> —
+              key <span className="font-display font-semibold">{offboardResult.creds.loginKey}</span>, password <span className="font-display font-semibold">{offboardResult.creds.defaultPassword}</span>.
+              Must be changed on first login. This won't be shown again.
+            </p>
+            <button onClick={onDismissOffboard} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
+    </>
   );
 }
 // A small inline "type a reason, then confirm" control used for send-back
@@ -813,13 +916,11 @@ function LeadershipSetup({ state, runAction }) {
   const [justCreated, setJustCreated] = useState(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
-  const [resetResult, setResetResult] = useState(null); // { name, loginKey } — shown once, then dismissed for good
-  const [offboarding, setOffboarding] = useState(null); // the account currently in the Offboard modal, or null
-  const [offboardResult, setOffboardResult] = useState(null); // { role, successorName, creds } — only set when a new successor account was created
   const existing = state.staff.filter((s) => ["AO", "COORDINATOR", "DB_MANAGER"].includes(s.role));
   const activeCount = existing.filter((s) => s.status === "ACTIVE").length;
   const q = query.trim().toLowerCase();
   const filtered = q ? existing.filter((s) => s.name.toLowerCase().includes(q) || ROLE_LABELS[s.role].toLowerCase().includes(q)) : existing;
+  const lifecycle = useAccountLifecycle(runAction);
 
   const submit = async () => {
     if (!name.trim() || busy) return;
@@ -827,11 +928,6 @@ function LeadershipSetup({ state, runAction }) {
     const result = await runAction(() => api.createLeadership(name.trim(), role), "Account created");
     setBusy(false);
     if (result) { setJustCreated(result); setName(""); }
-  };
-
-  const resetKey = async (s) => {
-    const result = await runAction(() => api.resetKey(s.id), "Key reset");
-    if (result) setResetResult({ name: s.name, loginKey: result.loginKey });
   };
 
   return (
@@ -862,33 +958,12 @@ function LeadershipSetup({ state, runAction }) {
           </p>
         </Card>
       )}
-      {resetResult && (
-        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-sm text-amber-800">
-              New key for <span className="font-medium">{resetResult.name}</span>: <span className="font-display font-semibold">{resetResult.loginKey}</span> —
-              share this securely. This is the only time it will be shown — write it down now.
-            </p>
-            <button onClick={() => setResetResult(null)} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
-              <X size={16} />
-            </button>
-          </div>
-        </Card>
-      )}
-      {offboardResult && (
-        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-sm text-amber-800">
-              New {offboardResult.role} account created for <span className="font-medium">{offboardResult.successorName}</span> —
-              key <span className="font-display font-semibold">{offboardResult.creds.loginKey}</span>, password <span className="font-display font-semibold">{offboardResult.creds.defaultPassword}</span>.
-              Must be changed on first login. This won't be shown again.
-            </p>
-            <button onClick={() => setOffboardResult(null)} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
-              <X size={16} />
-            </button>
-          </div>
-        </Card>
-      )}
+      <AccountLifecycleBanners
+        resetResult={lifecycle.resetResult}
+        onDismissReset={() => lifecycle.setResetResult(null)}
+        offboardResult={lifecycle.offboardResult}
+        onDismissOffboard={() => lifecycle.setOffboardResult(null)}
+      />
       <SearchBox value={query} onChange={setQuery} placeholder="Search by name or role..." />
 
       {/* Table on md+ screens, one stacked card per account below that —
@@ -906,24 +981,7 @@ function LeadershipSetup({ state, runAction }) {
                 <td className="px-4 py-2.5 text-slate-600"><MaskedKey value={s.loginKey} /></td>
                 <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge></td>
                 <td className="px-4 py-2.5">
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    {s.status === "FROZEN" ? (
-                      <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
-                    ) : (
-                      <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
-                    )}
-                    <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
-                  </div>
-                  {/* Offboard sits on its own row with extra gap and danger-red
-                      text — deliberately separated from the routine actions
-                      above, since it's the most consequential thing here.
-                      Not offered on an already-frozen account — there's no
-                      "outgoing" transition left to make. */}
-                  {s.status === "ACTIVE" && (
-                    <div className="mt-2 flex justify-end">
-                      <Btn size="touch" variant="dangerOutline" onClick={() => setOffboarding(s)}><UserX size={12} /> Offboard</Btn>
-                    </div>
-                  )}
+                  <AccountActions s={s} runAction={runAction} showResetKey showOffboard onResetKey={lifecycle.resetKey} onOffboard={lifecycle.setOffboarding} layout="row" />
                 </td>
               </tr>
             ))}
@@ -947,19 +1005,9 @@ function LeadershipSetup({ state, runAction }) {
             <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
               <span>Key: <MaskedKey value={s.loginKey} /></span>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {s.status === "FROZEN" ? (
-                <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
-              ) : (
-                <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
-              )}
-              <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => resetKey(s)} />
+            <div className="mt-3">
+              <AccountActions s={s} runAction={runAction} showResetKey showOffboard onResetKey={lifecycle.resetKey} onOffboard={lifecycle.setOffboarding} layout="stack" />
             </div>
-            {s.status === "ACTIVE" && (
-              <div className="mt-2">
-                <Btn size="touch" variant="dangerOutline" onClick={() => setOffboarding(s)}><UserX size={12} /> Offboard</Btn>
-              </div>
-            )}
           </Card>
         ))}
         {filtered.length === 0 && (
@@ -967,18 +1015,13 @@ function LeadershipSetup({ state, runAction }) {
         )}
       </div>
 
-      {offboarding && (
+      {lifecycle.offboarding && (
         <OffboardModal
-          target={offboarding}
-          candidates={existing.filter((a) => a.role === offboarding.role && a.id !== offboarding.id && a.status === "ACTIVE")}
+          target={lifecycle.offboarding}
+          candidates={existing.filter((a) => a.role === lifecycle.offboarding.role && a.id !== lifecycle.offboarding.id && a.status === "ACTIVE")}
           runAction={runAction}
-          onClose={() => setOffboarding(null)}
-          onDone={(result) => {
-            setOffboarding(null);
-            if (result.successorCreds) {
-              setOffboardResult({ role: ROLE_LABELS[offboarding.role], successorName: result.successor.name, creds: result.successorCreds });
-            }
-          }}
+          onClose={() => lifecycle.setOffboarding(null)}
+          onDone={lifecycle.handleOffboardDone}
         />
       )}
     </div>
@@ -1030,34 +1073,59 @@ function AOApprovals({ state, onApprove, onReject }) {
 
 function AOFreezeAccounts({ state, runAction, me }) {
   const staff = state.staff.filter((s) => s.role !== "PRINCIPAL" && s.id !== me.id);
+  const lifecycle = useAccountLifecycle(runAction);
   return (
     <div>
       <SectionTitle icon={Snowflake} title="Freeze / unfreeze accounts" subtitle="Freezing pauses an account immediately — they can't log in again until you unfreeze them. Past work stays untouched." />
+      <AccountLifecycleBanners
+        resetResult={lifecycle.resetResult}
+        onDismissReset={() => lifecycle.setResetResult(null)}
+        offboardResult={lifecycle.offboardResult}
+        onDismissOffboard={() => lifecycle.setOffboardResult(null)}
+      />
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {staff.map((s) => (
-              <tr key={s.id}>
-                <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
-                <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
-                <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : s.status === "FROZEN" ? "rose" : "amber"}>{s.status}</Badge></td>
-                <td className="px-4 py-2.5 text-right">
-                  {s.status === "FROZEN" ? (
-                    <ConfirmButton label="Unfreeze" confirmLabel="Unfreeze" variant="success" onConfirm={() => runAction(() => api.unfreezeUser(s.id), "Unfrozen")} />
-                  ) : s.status === "ACTIVE" ? (
-                    <ConfirmButton label="Freeze" confirmLabel="Freeze" icon={Snowflake} onConfirm={() => runAction(() => api.freezeUser(s.id), "Frozen")} />
-                  ) : (
-                    <span className="text-xs text-slate-400">n/a</span>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {staff.map((s) => {
+              // Reset key and Offboard are only backed by the server for
+              // leadership roles (AO/Coordinator/DB Manager) — field staff
+              // rows keep just Freeze/Unfreeze.
+              const isLeadership = LEADERSHIP_ROLES.includes(s.role);
+              return (
+                <tr key={s.id}>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
+                  <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
+                  <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : s.status === "FROZEN" ? "rose" : "amber"}>{s.status}</Badge></td>
+                  <td className="px-4 py-2.5">
+                    <AccountActions
+                      s={s}
+                      runAction={runAction}
+                      showResetKey={isLeadership}
+                      showOffboard={isLeadership}
+                      onResetKey={lifecycle.resetKey}
+                      onOffboard={lifecycle.setOffboarding}
+                      layout="row"
+                    />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Card>
+
+      {lifecycle.offboarding && (
+        <OffboardModal
+          target={lifecycle.offboarding}
+          candidates={state.staff.filter((a) => a.role === lifecycle.offboarding.role && a.id !== lifecycle.offboarding.id && a.status === "ACTIVE")}
+          runAction={runAction}
+          onClose={() => lifecycle.setOffboarding(null)}
+          onDone={lifecycle.handleOffboardDone}
+        />
+      )}
     </div>
   );
 }
