@@ -76,3 +76,14 @@ export async function generateLoginKey() {
   }
   throw new Error("Could not generate a unique login key — this should be virtually impossible; try again");
 }
+
+// A one-time temp password for a freshly-created or just-reset account —
+// replaces the old shared constant default. No uniqueness constraint needed
+// (unlike loginKey, this is never looked up by value), just enough entropy
+// that it's safe to hand someone as a real, if temporary, credential.
+const PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"; // no 0/O/1/l/I — avoids misreads when someone copies it off a banner
+export function generateTempPassword(length = 12) {
+  let out = "";
+  for (let i = 0; i < length; i++) out += PASSWORD_CHARS[Math.floor(Math.random() * PASSWORD_CHARS.length)];
+  return out;
+}

@@ -7,11 +7,6 @@ export const DAILY_REASONS = ["Sick", "Not in room", "Other"];
 export const AWAY_REASON = "Went home";
 export const ALL_REASONS = [...DAILY_REASONS, AWAY_REASON];
 
-// Every account starts with this same password. mustChangePassword stays
-// true until they change it, and the frontend should keep nagging them
-// (or even block them) until they do — see routes/auth.js.
-export const DEFAULT_PASSWORD = "Welcome@123";
-
 // Roles that self-register or are created directly by the Principal — they
 // start ACTIVE immediately, no AO approval needed.
 export const LEADERSHIP_ROLES = ["AO", "COORDINATOR", "DB_MANAGER"];

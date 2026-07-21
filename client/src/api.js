@@ -72,7 +72,8 @@ export const api = {
   // ---- Login & session ----
   login: (loginKey, password) => request("/auth/login", { method: "POST", body: { loginKey, password } }),
   me: () => request("/auth/me"),
-  changePassword: (currentPassword, newPassword) => request("/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
+  changePassword: (currentPassword, newPassword, confirmPassword) => request("/auth/change-password", { method: "POST", body: { currentPassword, newPassword, confirmPassword } }),
+  setPassword: (newPassword, confirmPassword) => request("/auth/set-password", { method: "POST", body: { newPassword, confirmPassword } }),
 
   // ---- Whole-app snapshot ----
   getState: () => request("/state"),
@@ -96,10 +97,10 @@ export const api = {
   markAway: (studentId, reason) => request(`/students/${studentId}/mark-away`, { method: "POST", body: { reason } }),
   reportBack: (studentId) => request(`/students/${studentId}/report-back`, { method: "POST" }),
 
-  // ---- Account freeze / key reset / offboard (Principal or AO) ----
+  // ---- Account freeze / password reset / offboard (Principal or AO) ----
   freezeUser: (id) => request(`/users/${id}/freeze`, { method: "POST" }),
   unfreezeUser: (id) => request(`/users/${id}/unfreeze`, { method: "POST" }),
-  resetKey: (id) => request(`/users/${id}/reset-key`, { method: "POST" }),
+  resetPassword: (id) => request(`/users/${id}/reset-password`, { method: "POST" }),
   offboardUser: (id, body) => request(`/users/${id}/offboard`, { method: "POST", body }),
 
   // ---- Excel template / import / export (Database Manager only) ----

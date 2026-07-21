@@ -40,14 +40,18 @@ changesRouter.post("/changes/:id/approve", requireAuth, requireRole("AO"), async
   if (!change) return res.status(404).json({ error: "Change not found" });
   if (change.status !== "pending") return res.status(409).json({ error: "This change was already decided" });
 
+  let applied;
   try {
-    await applyChange(prisma, change); // this is the line that actually writes to students/rooms/staff
+    applied = await applyChange(prisma, change); // this is the line that actually writes to students/rooms/staff
   } catch (e) {
     return res.status(400).json({ error: `Could not apply change: ${e.message}` });
   }
 
   const updated = await prisma.pendingChange.update({ where: { id: change.id }, data: { status: "approved" } });
-  res.json({ change: updated });
+  // create_staff is the one change type applyChange() hands anything back
+  // for — a freshly generated temp password, visible here once to whichever
+  // AO approved it, never persisted in the change's payload. See applyChange.js.
+  res.json({ change: updated, password: applied?.password });
 });
 
 changesRouter.post("/changes/:id/reject", requireAuth, requireRole("AO"), async (req, res) => {

@@ -62,16 +62,22 @@ enum AccountStatus {
 // Every person who can log in — one table for all eight roles, distinguished
 // by the `role` field. Login is by `loginKey` + password, not username —
 // there is no username field in this app at all.
+//
+// loginKey and passwordHash split two different jobs that used to blur
+// together: loginKey is a permanent, non-secret identifier — set once at
+// creation by whoever creates the account, never reset, safe to display in
+// plain text. passwordHash is the actual credential — an authority never
+// chooses it directly, only ever a generated temp value (account creation,
+// or Reset Password) that the owner must replace with one only they know.
 model User {
-  id                 String        @id @default(cuid())
-  name               String
-  loginKey           String        @unique // 4-digit numeric string, e.g. "4821" — see auth.js keygen
-  passwordHash       String
-  mustChangePassword Boolean       @default(true) // true until they change the dummy/default password
-  mustChangeKey      Boolean       @default(false) // set true when a Principal/AO resets this account's key — stored flag only, not enforced anywhere yet
-  role               Role
-  status             AccountStatus @default(ACTIVE) // Principal + leadership start ACTIVE; DB-Manager-created staff start PENDING
-  createdAt          DateTime      @default(now())
+  id              String        @id @default(cuid())
+  name            String
+  loginKey        String        @unique // 4-digit numeric string, e.g. "4821" — see auth.js keygen. Permanent — no reset flow.
+  passwordHash    String // bcrypt hash of the real secret — starts as a generated temp password, never a shared constant
+  mustSetPassword Boolean       @default(true) // true while still on a generated temp password (fresh creation or after Reset Password) — cleared once the owner sets their own
+  role            Role
+  status          AccountStatus @default(ACTIVE) // Principal + leadership start ACTIVE; DB-Manager-created staff start PENDING
+  createdAt       DateTime      @default(now())
 
   // Scope of responsibility — which fields matter depends on the role:
   roomIds  Json @default("[]") // Warden: HostelRoom ids they cover

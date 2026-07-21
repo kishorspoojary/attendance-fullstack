@@ -5,8 +5,8 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../db.js";
-import { signToken, requireAuth, requireRole, publicUser, generateLoginKey } from "../auth.js";
-import { DEFAULT_PASSWORD, LEADERSHIP_ROLES } from "../constants.js";
+import { signToken, requireAuth, requireRole, publicUser, generateLoginKey, generateTempPassword } from "../auth.js";
+import { LEADERSHIP_ROLES } from "../constants.js";
 
 export const authRouter = Router();
 
@@ -34,7 +34,7 @@ authRouter.post("/register-principal", async (req, res) => {
   const loginKey = await generateLoginKey();
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, loginKey, passwordHash, role: "PRINCIPAL", status: "ACTIVE", mustChangePassword: false },
+    data: { name, loginKey, passwordHash, role: "PRINCIPAL", status: "ACTIVE", mustSetPassword: false },
   });
 
   const token = signToken(user);
@@ -43,22 +43,24 @@ authRouter.post("/register-principal", async (req, res) => {
 
 // Principal creates the AO / Coordinator / Database Manager accounts —
 // "activating the system." They start ACTIVE immediately (no approval
-// needed; the Principal creating them directly *is* the approval) with the
-// same shared default password everyone else starts with.
+// needed; the Principal creating them directly *is* the approval), each
+// with its own freshly generated temp password rather than a shared one.
 authRouter.post("/leadership", requireAuth, requireRole("PRINCIPAL"), async (req, res) => {
   const { name, role } = req.body || {};
   if (!name || !LEADERSHIP_ROLES.includes(role)) {
     return res.status(400).json({ error: `role must be one of: ${LEADERSHIP_ROLES.join(", ")}` });
   }
   const loginKey = await generateLoginKey();
-  const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+  const password = generateTempPassword();
+  const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, loginKey, passwordHash, role, status: "ACTIVE", mustChangePassword: true },
+    data: { name, loginKey, passwordHash, role, status: "ACTIVE", mustSetPassword: true },
   });
-  // Returning the plain default password here (once, at creation time only)
-  // is intentional and safe — it's the same fixed default for everyone and
-  // never a secret; the Principal needs to actually hand it to this person.
-  res.status(201).json({ user: publicUser(user), loginKey, defaultPassword: DEFAULT_PASSWORD });
+  // Returning the plain temp password here (once, at creation time only) is
+  // intentional and safe — it's freshly generated per account and never
+  // stored or logged anywhere in plaintext after this response goes out;
+  // the Principal needs to actually hand it to this person.
+  res.status(201).json({ user: publicUser(user), loginKey, password });
 });
 
 authRouter.post("/login", async (req, res) => {
@@ -83,12 +85,16 @@ authRouter.get("/me", requireAuth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-// Anyone logged in can change their own password — this is also how the
-// mandatory "you're still on the default password" nudge gets cleared.
+// Self-service password change for anyone already set up — always requires
+// the current password, regardless of mustSetPassword. Any role, self only
+// (req.user.id — there's no :id param, so this can never target anyone else).
 authRouter.post("/change-password", requireAuth, async (req, res) => {
-  const { currentPassword, newPassword } = req.body || {};
+  const { currentPassword, newPassword, confirmPassword } = req.body || {};
   if (!currentPassword || !newPassword) return res.status(400).json({ error: "Current and new password are required" });
   if (newPassword.length < 6) return res.status(400).json({ error: "New password must be at least 6 characters" });
+  if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+    return res.status(400).json({ error: "New password and confirmation don't match" });
+  }
 
   const ok = await bcrypt.compare(currentPassword, req.user.passwordHash);
   if (!ok) return res.status(401).json({ error: "Current password is incorrect" });
@@ -96,7 +102,30 @@ authRouter.post("/change-password", requireAuth, async (req, res) => {
   const passwordHash = await bcrypt.hash(newPassword, 10);
   const updated = await prisma.user.update({
     where: { id: req.user.id },
-    data: { passwordHash, mustChangePassword: false },
+    data: { passwordHash, mustSetPassword: false },
+  });
+  res.json({ user: publicUser(updated) });
+});
+
+// Used right after login when mustSetPassword is true (fresh account or
+// just-reset password) — deliberately no current-password check, since the
+// whole point is replacing a temp password nobody's supposed to keep using,
+// not verifying one. Refuses outright if mustSetPassword is already false,
+// so this can't be used as a backdoor password change bypassing
+// change-password's current-password check.
+authRouter.post("/set-password", requireAuth, async (req, res) => {
+  if (!req.user.mustSetPassword) {
+    return res.status(403).json({ error: "This account isn't waiting on a password setup — use Change Password instead" });
+  }
+  const { newPassword, confirmPassword } = req.body || {};
+  if (!newPassword) return res.status(400).json({ error: "New password is required" });
+  if (newPassword.length < 6) return res.status(400).json({ error: "New password must be at least 6 characters" });
+  if (newPassword !== confirmPassword) return res.status(400).json({ error: "New password and confirmation don't match" });
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const updated = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { passwordHash, mustSetPassword: false },
   });
   res.json({ user: publicUser(updated) });
 });

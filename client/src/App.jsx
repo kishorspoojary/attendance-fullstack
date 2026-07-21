@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch, Eye, EyeOff, UserX,
+  CalendarSearch, UserX,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -72,9 +72,9 @@ const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
 };
-// Mirrors server/src/constants.js's LEADERSHIP_ROLES — reset-key and offboard
-// are only backed by the server for these three roles, so the client needs
-// the same list to decide which rows get those buttons.
+// Mirrors server/src/constants.js's LEADERSHIP_ROLES — reset-password and
+// offboard are only backed by the server for these three roles, so the
+// client needs the same list to decide which rows get those buttons.
 const LEADERSHIP_ROLES = ["AO", "COORDINATOR", "DB_MANAGER"];
 const DAILY_REASONS = ["Sick", "Not in room", "Other"];
 const AWAY_REASON = "Went home";
@@ -214,29 +214,6 @@ function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, on
     </div>
   );
 }
-// Login keys stay hidden by default (someone glancing at a shared screen
-// shouldn't be able to read them off) — tap the eye to reveal briefly, then
-// it hides itself again rather than staying exposed indefinitely.
-function MaskedKey({ value }) {
-  const [revealed, setRevealed] = useState(false);
-  // Re-mask on any actual key change (e.g. a reset landing while this row's
-  // key happened to be revealed) — the component doesn't unmount just
-  // because its value changed, so this can't be left to the timer alone.
-  useEffect(() => { setRevealed(false); }, [value]);
-  useEffect(() => {
-    if (!revealed) return;
-    const t = setTimeout(() => setRevealed(false), 4000);
-    return () => clearTimeout(t);
-  }, [revealed]);
-  return (
-    <span className="inline-flex items-center gap-1.5 font-display">
-      {revealed ? value : "••••"}
-      <button type="button" onClick={() => setRevealed((r) => !r)} className="text-slate-400 hover:text-slate-600" aria-label={revealed ? "Hide key" : "Reveal key"}>
-        {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
-      </button>
-    </span>
-  );
-}
 // Two-step Offboard flow: pick a successor (existing same-role account, or
 // create a new one inline), see exactly what will happen, then type the
 // outgoing account's exact name to actually confirm — more friction than
@@ -338,15 +315,15 @@ function OffboardModal({ target, candidates, runAction, onClose, onDone }) {
     </Modal>
   );
 }
-// Freeze/Unfreeze, Reset key, and Offboard for one account row — shared
+// Freeze/Unfreeze, Reset password, and Offboard for one account row — shared
 // between the Principal's Leadership screen and the AO's Freeze screen so
 // the button set, visibility rules, and layout aren't duplicated across
-// both. showResetKey/showOffboard let each caller restrict those two to
+// both. showResetPassword/showOffboard let each caller restrict those two to
 // leadership rows only (the backend rejects them for field staff anyway).
 // layout="row" is the desktop table's single right-aligned line with a
 // divider before Offboard; layout="stack" is the mobile card's vertical
 // arrangement, every button full-width via Btn's own w-full default.
-function AccountActions({ s, runAction, showResetKey, showOffboard, onResetKey, onOffboard, layout = "row" }) {
+function AccountActions({ s, runAction, showResetPassword, showOffboard, onResetPassword, onOffboard, layout = "row" }) {
   // PENDING/REJECTED field-staff rows (not yet AO-approved, or declined)
   // get neither button — freezing only makes sense once an account can
   // actually log in in the first place.
@@ -357,7 +334,7 @@ function AccountActions({ s, runAction, showResetKey, showOffboard, onResetKey, 
   ) : (
     <span className="text-xs text-slate-400">n/a</span>
   );
-  const resetBtn = showResetKey && <ConfirmButton label="Reset key" confirmLabel="Reset key" variant="outline" icon={KeyRound} onConfirm={() => onResetKey(s)} />;
+  const resetBtn = showResetPassword && <ConfirmButton label="Reset password" confirmLabel="Reset password" variant="outline" icon={KeyRound} onConfirm={() => onResetPassword(s)} />;
   const offboardBtn = showOffboard && s.status === "ACTIVE" && (
     <Btn size="touch" variant="dangerOutline" onClick={() => onOffboard(s)}><UserX size={12} /> Offboard</Btn>
   );
@@ -379,17 +356,17 @@ function AccountActions({ s, runAction, showResetKey, showOffboard, onResetKey, 
     </div>
   );
 }
-// Holds the state and handlers behind Reset key and Offboard — shared by
-// any screen that renders AccountActions, so both screens dismiss/refresh
+// Holds the state and handlers behind Reset password and Offboard — shared
+// by any screen that renders AccountActions, so both screens dismiss/refresh
 // the same way instead of each re-implementing it.
 function useAccountLifecycle(runAction) {
-  const [resetResult, setResetResult] = useState(null); // { name, loginKey }
+  const [resetResult, setResetResult] = useState(null); // { name, password }
   const [offboarding, setOffboarding] = useState(null); // account currently in the Offboard modal, or null
   const [offboardResult, setOffboardResult] = useState(null); // { role, successorName, creds }
 
-  const resetKey = async (s) => {
-    const result = await runAction(() => api.resetKey(s.id), "Key reset");
-    if (result) setResetResult({ name: s.name, loginKey: result.loginKey });
+  const resetPassword = async (s) => {
+    const result = await runAction(() => api.resetPassword(s.id), "Password reset");
+    if (result) setResetResult({ name: s.name, password: result.password });
   };
 
   const handleOffboardDone = (result) => {
@@ -400,10 +377,12 @@ function useAccountLifecycle(runAction) {
     }
   };
 
-  return { resetResult, setResetResult, offboarding, setOffboarding, offboardResult, setOffboardResult, resetKey, handleOffboardDone };
+  return { resetResult, setResetResult, offboarding, setOffboarding, offboardResult, setOffboardResult, resetPassword, handleOffboardDone };
 }
-// The two dismissible amber banners shown after a Reset key or Offboard
-// (with a newly-created successor) — same visual pattern in both places.
+// The two dismissible amber banners shown after a Reset password or
+// Offboard (with a newly-created successor) — same visual pattern in both
+// places. loginKey is safe to show alongside the password since it's a
+// permanent, non-secret identifier, not part of the credential being reset.
 function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, onDismissOffboard }) {
   return (
     <>
@@ -411,7 +390,7 @@ function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, 
         <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
           <div className="flex items-start justify-between gap-3">
             <p className="text-sm text-amber-800">
-              New key for <span className="font-medium">{resetResult.name}</span>: <span className="font-display font-semibold">{resetResult.loginKey}</span> —
+              New password for <span className="font-medium">{resetResult.name}</span>: <span className="font-display font-semibold">{resetResult.password}</span> —
               share this securely. This is the only time it will be shown — write it down now.
             </p>
             <button onClick={onDismissReset} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
@@ -425,7 +404,7 @@ function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, 
           <div className="flex items-start justify-between gap-3">
             <p className="text-sm text-amber-800">
               New {offboardResult.role} account created for <span className="font-medium">{offboardResult.successorName}</span> —
-              key <span className="font-display font-semibold">{offboardResult.creds.loginKey}</span>, password <span className="font-display font-semibold">{offboardResult.creds.defaultPassword}</span>.
+              key <span className="font-display font-semibold">{offboardResult.creds.loginKey}</span>, password <span className="font-display font-semibold">{offboardResult.creds.password}</span>.
               Must be changed on first login. This won't be shown again.
             </p>
             <button onClick={onDismissOffboard} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
@@ -587,11 +566,12 @@ function RegisterForm({ onLoggedIn }) {
   );
 }
 
-// Blocks the rest of the app until a mandatory password change is done.
-// Shown whenever me.mustChangePassword is true — true for every account
-// until the person swaps out the shared default password for their own.
-function ChangePasswordGate({ onDone, onLogout }) {
-  const [currentPassword, setCurrentPassword] = useState("");
+// Blocks the rest of the app until a mandatory password setup is done.
+// Shown whenever me.mustSetPassword is true — a fresh account on its temp
+// password, or one that just had its password reset. Deliberately no
+// current-password field: the temp password isn't a secret worth verifying,
+// it's the thing being replaced (see /auth/set-password's own comment).
+function SetPasswordGate({ onDone, onLogout }) {
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
@@ -603,7 +583,7 @@ function ChangePasswordGate({ onDone, onLogout }) {
     if (newPassword !== confirm) return setError("Passwords don't match");
     setBusy(true);
     try {
-      await api.changePassword(currentPassword, newPassword);
+      await api.setPassword(newPassword, confirm);
       onDone();
     } catch (e) {
       setError(e.message);
@@ -618,12 +598,11 @@ function ChangePasswordGate({ onDone, onLogout }) {
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-amber-100 text-amber-700"><KeyRound size={17} /></div>
           <div>
             <p className="font-display text-base font-semibold text-slate-900">Set your own password</p>
-            <p className="text-xs text-slate-500">You're still on the shared starting password — choose your own before continuing.</p>
+            <p className="text-xs text-slate-500">You're still on a temporary password — choose your own before continuing.</p>
           </div>
         </div>
         <div className="space-y-3">
-          <Field label="Current password"><input type="password" className={inputCls} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoFocus /></Field>
-          <Field label="New password"><input type="password" className={inputCls} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></Field>
+          <Field label="New password"><input type="password" className={inputCls} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoFocus /></Field>
           <Field label="Confirm new password"><input type="password" className={inputCls} value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} /></Field>
         </div>
         {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
@@ -633,6 +612,57 @@ function ChangePasswordGate({ onDone, onLogout }) {
         </div>
       </Card>
     </div>
+  );
+}
+
+// Self-service password change, reachable any time from the top bar by any
+// logged-in role — unlike SetPasswordGate above, this always requires the
+// current password and never blocks the rest of the app.
+function ChangePasswordModal({ onClose }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (newPassword.length < 6) return setError("New password must be at least 6 characters");
+    if (newPassword !== confirm) return setError("Passwords don't match");
+    setBusy(true);
+    try {
+      await api.changePassword(currentPassword, newPassword, confirm);
+      setDone(true);
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title="Change password" onClose={onClose}>
+      {done ? (
+        <div className="space-y-4 text-center">
+          <CheckCircle2 className="mx-auto text-emerald-600" size={28} />
+          <p className="text-sm text-slate-600">Password changed.</p>
+          <Btn size="touch" onClick={onClose}>Done</Btn>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="space-y-3">
+            <Field label="Current password"><input type="password" className={inputCls} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoFocus /></Field>
+            <Field label="New password"><input type="password" className={inputCls} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></Field>
+            <Field label="Confirm new password"><input type="password" className={inputCls} value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} /></Field>
+          </div>
+          {error && <p className="text-sm text-rose-600">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Btn size="touch" variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn size="touch" onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <KeyRound size={14} />} Change password</Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -651,6 +681,7 @@ export default function App() {
   // dismissible with the X. Not persisted anywhere — reappearing next
   // time they open the app is the point.
   const [showGreeting, setShowGreeting] = useState(true);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const date = todayStr();
 
   // The one function every mutation in this app goes through: call the
@@ -703,8 +734,8 @@ export default function App() {
       </div>
     );
   }
-  if (me.mustChangePassword) {
-    return <ChangePasswordGate onDone={refresh} onLogout={() => { api.clearToken(); setMe(null); }} />;
+  if (me.mustSetPassword) {
+    return <SetPasswordGate onDone={refresh} onLogout={() => { api.clearToken(); setMe(null); }} />;
   }
 
   const logout = () => { api.clearToken(); setMe(null); setState(null); };
@@ -757,6 +788,9 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-xs text-white/70 sm:inline">{me.name} · {ROLE_LABELS[me.role]} · Key {me.loginKey}</span>
+            <button onClick={() => setShowChangePassword(true)} className="flex items-center gap-1 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20">
+              <KeyRound size={13} /> Change password
+            </button>
             <button onClick={logout} className="flex items-center gap-1 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20">
               <LogOut size={13} /> Log out
             </button>
@@ -806,7 +840,7 @@ export default function App() {
             <>
               {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} />}
               {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
-              {activeTab === "approvals" && <AOApprovals state={state} onApprove={(c) => runAction(() => api.approveChange(c.id), "Approved")} onReject={(c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected")} />}
+              {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
               {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
@@ -827,6 +861,7 @@ export default function App() {
       </div>
 
       {toast && <div className="fixed bottom-5 right-5 z-20"><Badge tone={toast.tone}>{toast.msg}</Badge></div>}
+      {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
     </div>
   );
 }
@@ -933,7 +968,7 @@ function LeadershipSetup({ state, runAction }) {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={UserPlus} title="Leadership accounts" subtitle="Create the AO, Coordinator, and Database Manager accounts. Each starts on the shared default password and must change it on first login." />
+        <SectionTitle icon={UserPlus} title="Leadership accounts" subtitle="Create the AO, Coordinator, and Database Manager accounts. Each gets its own temp password, shown once, and must set their own on first login." />
         <Badge tone="slate">{existing.length} account{existing.length === 1 ? "" : "s"}, {activeCount} active</Badge>
       </div>
       <Card className="mb-6 p-4">
@@ -953,7 +988,7 @@ function LeadershipSetup({ state, runAction }) {
         <Card className="mb-6 border-emerald-200 bg-emerald-50 p-4">
           <p className="text-sm text-emerald-800">
             Created <span className="font-medium">{justCreated.user.name}</span> ({ROLE_LABELS[justCreated.user.role]}) —
-            login key <span className="font-display font-semibold">{justCreated.loginKey}</span>, password <span className="font-display font-semibold">{justCreated.defaultPassword}</span>.
+            login key <span className="font-display font-semibold">{justCreated.loginKey}</span>, password <span className="font-display font-semibold">{justCreated.password}</span>.
             Hand these to them now — this is the only time the password is shown.
           </p>
         </Card>
@@ -978,10 +1013,10 @@ function LeadershipSetup({ state, runAction }) {
               <tr key={s.id}>
                 <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                 <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
-                <td className="px-4 py-2.5 text-slate-600"><MaskedKey value={s.loginKey} /></td>
+                <td className="px-4 py-2.5 text-slate-600 font-display">{s.loginKey}</td>
                 <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge></td>
                 <td className="px-4 py-2.5">
-                  <AccountActions s={s} runAction={runAction} showResetKey showOffboard onResetKey={lifecycle.resetKey} onOffboard={lifecycle.setOffboarding} layout="row" />
+                  <AccountActions s={s} runAction={runAction} showResetPassword showOffboard onResetPassword={lifecycle.resetPassword} onOffboard={lifecycle.setOffboarding} layout="row" />
                 </td>
               </tr>
             ))}
@@ -1003,10 +1038,10 @@ function LeadershipSetup({ state, runAction }) {
               <Badge tone={s.status === "ACTIVE" ? "emerald" : "rose"}>{s.status === "ACTIVE" ? "Active" : "Frozen"}</Badge>
             </div>
             <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
-              <span>Key: <MaskedKey value={s.loginKey} /></span>
+              <span>Key: <span className="font-display">{s.loginKey}</span></span>
             </div>
             <div className="mt-3">
-              <AccountActions s={s} runAction={runAction} showResetKey showOffboard onResetKey={lifecycle.resetKey} onOffboard={lifecycle.setOffboarding} layout="stack" />
+              <AccountActions s={s} runAction={runAction} showResetPassword showOffboard onResetPassword={lifecycle.resetPassword} onOffboard={lifecycle.setOffboarding} layout="stack" />
             </div>
           </Card>
         ))}
@@ -1031,11 +1066,37 @@ function LeadershipSetup({ state, runAction }) {
 /* ---------------------------------------------------------------- */
 /* 5b. AO                                                              */
 /* ---------------------------------------------------------------- */
-function AOApprovals({ state, onApprove, onReject }) {
+function AOApprovals({ state, runAction }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
+  // Only ever set for an approved create_staff change — that's the only
+  // type whose approval generates a temp password (see applyChange.js). The
+  // Database Manager already saw the loginKey at proposal time; this is the
+  // one moment the password itself exists in plaintext, so it's shown once
+  // here to whichever AO clicked approve, then gone.
+  const [newStaffPassword, setNewStaffPassword] = useState(null); // { name, password }
+
+  const approve = async (c) => {
+    const result = await runAction(() => api.approveChange(c.id), "Approved");
+    if (result?.password) setNewStaffPassword({ name: c.payload?.name || "the new account", password: result.password });
+  };
+  const reject = (c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected");
+
   return (
     <div>
       <SectionTitle icon={ShieldCheck} title="Master data approvals" subtitle="Every Database Manager change — including new staff accounts — is applied only after your approval." />
+      {newStaffPassword && (
+        <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm text-amber-800">
+              Temp password for <span className="font-medium">{newStaffPassword.name}</span>: <span className="font-display font-semibold">{newStaffPassword.password}</span> —
+              share this securely, along with the login key the Database Manager already has. This is the only time it will be shown — write it down now.
+            </p>
+            <button onClick={() => setNewStaffPassword(null)} className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600" aria-label="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
       {pending.length === 0 && <EmptyNote text="No pending changes right now." />}
       <div className="space-y-3">
         {pending.map((c) => (
@@ -1049,8 +1110,8 @@ function AOApprovals({ state, onApprove, onReject }) {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Btn size="sm" variant="success" onClick={() => onApprove(c)}><Check size={13} /> Approve</Btn>
-                <Btn size="sm" variant="danger" onClick={() => onReject(c)}><X size={13} /> Reject</Btn>
+                <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
+                <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
               </div>
             </div>
           </Card>
@@ -1090,9 +1151,9 @@ function AOFreezeAccounts({ state, runAction, me }) {
           </thead>
           <tbody className="divide-y divide-slate-100">
             {staff.map((s) => {
-              // Reset key and Offboard are only backed by the server for
-              // leadership roles (AO/Coordinator/DB Manager) — field staff
-              // rows keep just Freeze/Unfreeze.
+              // Reset password and Offboard are only backed by the server
+              // for leadership roles (AO/Coordinator/DB Manager) — field
+              // staff rows keep just Freeze/Unfreeze.
               const isLeadership = LEADERSHIP_ROLES.includes(s.role);
               return (
                 <tr key={s.id}>
@@ -1103,9 +1164,9 @@ function AOFreezeAccounts({ state, runAction, me }) {
                     <AccountActions
                       s={s}
                       runAction={runAction}
-                      showResetKey={isLeadership}
+                      showResetPassword={isLeadership}
                       showOffboard={isLeadership}
-                      onResetKey={lifecycle.resetKey}
+                      onResetPassword={lifecycle.resetPassword}
                       onOffboard={lifecycle.setOffboarding}
                       layout="row"
                     />
@@ -1629,7 +1690,7 @@ function CreateStaffAdmin({ state, runAction }) {
         <Card className="mb-6 border-emerald-200 bg-emerald-50 p-4">
           <p className="text-sm text-emerald-800">
             Sent <span className="font-medium">{justSent.name}</span> ({ROLE_LABELS[justSent.role]}) to the AO —
-            their login key will be <span className="font-display font-semibold">{justSent.key}</span> once approved (password: the shared default).
+            their login key will be <span className="font-display font-semibold">{justSent.key}</span> once approved. The AO will get a one-time temp password to hand over at that point.
           </p>
         </Card>
       )}

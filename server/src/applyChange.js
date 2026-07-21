@@ -8,8 +8,14 @@
 // `payload` into a real write against the actual tables.
 // ============================================================================
 import bcrypt from "bcryptjs";
-import { DEFAULT_PASSWORD } from "./constants.js";
+import { generateTempPassword } from "./auth.js";
 
+// Returns undefined for most change types. create_staff is the one
+// exception — it returns { password }, the plaintext temp password for the
+// account it just created, generated here at approval time (not earlier,
+// at proposal time) specifically so it's never written to PendingChange.payload
+// and only ever exists in the one response the approving AO gets back. See
+// routes/changes.js's /approve route for where that response is built.
 export async function applyChange(prisma, change) {
   const p = change.payload; // the data the Database Manager submitted, shape depends on change.type
 
@@ -96,7 +102,8 @@ export async function applyChange(prisma, change) {
     // this (see routes/changes.js) — never here, so the same key that was
     // shown then is the one that actually ends up on the account.
     case "create_staff": {
-      const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+      const password = generateTempPassword();
+      const passwordHash = await bcrypt.hash(password, 10);
       await prisma.user.create({
         data: {
           name: p.name,
@@ -104,13 +111,13 @@ export async function applyChange(prisma, change) {
           loginKey: p.loginKey,
           passwordHash,
           status: "ACTIVE",
-          mustChangePassword: true,
+          mustSetPassword: true,
           roomIds: p.roomIds || [],
           floorIds: p.floorIds || [],
           classIds: p.classIds || [],
         },
       });
-      break;
+      return { password };
     }
 
     default:
