@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch, UserX,
+  CalendarSearch, UserX, ListTree,
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -756,6 +756,7 @@ export default function App() {
       { id: "approvals", label: "Master data approvals", icon: ShieldCheck },
       { id: "freeze", label: "Freeze / unfreeze", icon: Snowflake },
       { id: "hierarchy", label: "Hierarchy status", icon: Users },
+      { id: "viewstudents", label: "View students", icon: ListTree },
     ],
     COORDINATOR: [
       { id: "coordinator", label: "Attendance approvals", icon: ListChecks },
@@ -763,6 +764,7 @@ export default function App() {
     ],
     DB_MANAGER: [
       { id: "students", label: "Students", icon: GraduationCap },
+      { id: "viewstudents", label: "View students", icon: ListTree },
       { id: "structure", label: "Hostels & classes", icon: Building2 },
       { id: "assign", label: "Assign staff", icon: UserCog },
       { id: "createstaff", label: "Create staff account", icon: UserPlus },
@@ -849,6 +851,7 @@ export default function App() {
               {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
               {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
+              {activeTab === "viewstudents" && <ViewStudents me={me} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
               {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
               {activeTab === "students" && <StudentsAdmin state={state} runAction={runAction} />}
@@ -1359,6 +1362,293 @@ function AOHierarchyStatus({ state }) {
         <Group label="Incharge Teachers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
         <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* 5b2. Shared: browse students (Database Manager and AO, read-only)  */
+/* ---------------------------------------------------------------- */
+
+// Wording differs only for the Database Manager, who has somewhere to act
+// on it (the Students / Hostels & classes tabs) — the AO doesn't have those
+// tabs, so pointing them there would be a dead end.
+function emptyStudentsMsg(role, kind) {
+  const isDbManager = role === "DB_MANAGER";
+  const MSGS = {
+    college_no_structure: isDbManager ? "No classes yet — add some in Hostels & classes." : "No classes have been set up yet.",
+    college_no_students: isDbManager ? "No students yet — add some on the Students page." : "No students have been added yet.",
+    hostel_no_structure: isDbManager ? "No hostels yet — add some in Hostels & classes." : "No hostel structure has been set up yet.",
+    hostel_no_students: isDbManager ? "No students yet — add some on the Students page." : "No students have been added yet.",
+  };
+  return MSGS[kind];
+}
+
+// One collapsible row, used at every level of both views (class section,
+// hostel, floor, room, day-scholar class group). `forceOpen` lets an active
+// search expand every level automatically so matches aren't hidden behind a
+// manual toggle the user never touched.
+function Collapsible({ header, children, forceOpen }) {
+  const [open, setOpen] = useState(false);
+  const isOpen = forceOpen || open;
+  return (
+    <div>
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
+        <ChevronDown size={15} className={`shrink-0 text-slate-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+        {header}
+      </button>
+      {isOpen && <div className="mt-2">{children}</div>}
+    </div>
+  );
+}
+
+// Roll/name (+ class, for the hostel view's room occupants) rows — table on
+// md+ screens, one card per student below that, same pattern as everywhere
+// else in the app.
+function StudentRows({ students, showClass }) {
+  return (
+    <>
+      <Card className="hidden overflow-x-auto md:block">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th>{showClass && <th className="px-4 py-2">Class</th>}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {students.map((s) => (
+              <tr key={s.id}>
+                <td className="px-4 py-2 text-slate-600">{s.roll}</td>
+                <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
+                {showClass && <td className="px-4 py-2 text-slate-600">{s.className || "—"}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      <div className="space-y-2 md:hidden">
+        {students.map((s) => (
+          <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+            <div className="flex items-center justify-between"><span className="font-medium text-slate-800">{s.name}</span><span className="text-xs text-slate-400">{s.roll}</span></div>
+            {showClass && <div className="mt-1 text-xs text-slate-500">{s.className || "—"}</div>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// College view: classes as collapsible sections; each student row shows
+// their hostel dimension ("Boys Hostel A · Room 101") or a "Day scholar"
+// pill — driven off whether the endpoint resolved a room, not the isLocal
+// flag, so it stays correct even for the rare student where the two disagree.
+function CollegeStudentsView({ classes, query, role }) {
+  const q = query.trim().toLowerCase();
+  const matches = (s) => !q || s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q);
+
+  if (classes.length === 0) return <EmptyNote text={emptyStudentsMsg(role, "college_no_structure")} />;
+  const totalStudents = classes.reduce((n, c) => n + c.count, 0);
+  if (totalStudents === 0) return <EmptyNote text={emptyStudentsMsg(role, "college_no_students")} />;
+
+  const visible = classes
+    .map((c) => ({ ...c, filteredStudents: c.students.filter(matches) }))
+    .filter((c) => !q || c.filteredStudents.length > 0);
+  if (visible.length === 0) return <EmptyNote text="No students match your search." />;
+
+  return (
+    <div className="space-y-3">
+      {visible.map((c) => (
+        <Card key={c.id} className="p-3">
+          <Collapsible
+            forceOpen={!!q}
+            header={
+              <div className="flex flex-1 items-center justify-between gap-2">
+                <span className="font-medium text-slate-800">{c.name}</span>
+                <Badge tone="slate">{pluralize(c.count, "student")}</Badge>
+              </div>
+            }
+          >
+            <Card className="hidden overflow-x-auto md:block">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Hostel dimension</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {c.filteredStudents.map((s) => (
+                    <tr key={s.id}>
+                      <td className="px-4 py-2 text-slate-600">{s.roll}</td>
+                      <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
+                      <td className="px-4 py-2">{s.hostelName ? `${s.hostelName} · Room ${s.roomNo}` : <Badge tone="amber">Day scholar</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+            <div className="space-y-2 md:hidden">
+              {c.filteredStudents.map((s) => (
+                <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+                  <div className="flex items-center justify-between"><span className="font-medium text-slate-800">{s.name}</span><span className="text-xs text-slate-400">{s.roll}</span></div>
+                  <div className="mt-1">{s.hostelName ? <span className="text-xs text-slate-500">{s.hostelName} · Room {s.roomNo}</span> : <Badge tone="amber">Day scholar</Badge>}</div>
+                </div>
+              ))}
+            </div>
+          </Collapsible>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// Hostel view: Hostel -> Floor -> Room -> occupants, all counts as returned
+// by the endpoint (never re-derived here), plus a separate day-scholars
+// section grouped by class since day scholars have no room to nest under.
+function HostelStudentsView({ hostels, dayScholars, query, role }) {
+  const q = query.trim().toLowerCase();
+  const matches = (s) => !q || s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q);
+
+  const totalStudents = hostels.reduce((n, h) => n + h.count, 0) + dayScholars.reduce((n, d) => n + d.count, 0);
+  if (hostels.length === 0 && dayScholars.length === 0) return <EmptyNote text={emptyStudentsMsg(role, "hostel_no_structure")} />;
+  if (totalStudents === 0) return <EmptyNote text={emptyStudentsMsg(role, "hostel_no_students")} />;
+
+  const filteredHostels = hostels
+    .map((h) => ({
+      ...h,
+      floors: h.floors
+        .map((f) => ({
+          ...f,
+          rooms: f.rooms
+            .map((r) => ({ ...r, filteredOccupants: r.occupants.filter(matches) }))
+            .filter((r) => !q || r.filteredOccupants.length > 0),
+        }))
+        .filter((f) => !q || f.rooms.length > 0),
+    }))
+    .filter((h) => !q || h.floors.length > 0);
+
+  const filteredDayScholars = dayScholars
+    .map((d) => ({ ...d, filteredStudents: d.students.filter(matches) }))
+    .filter((d) => !q || d.filteredStudents.length > 0);
+
+  if (q && filteredHostels.length === 0 && filteredDayScholars.length === 0) return <EmptyNote text="No students match your search." />;
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-3">
+        {hostels.length === 0 ? (
+          <EmptyNote text={emptyStudentsMsg(role, "hostel_no_structure")} />
+        ) : (
+          filteredHostels.map((h) => (
+            <Card key={h.id} className="p-3">
+              <Collapsible
+                forceOpen={!!q}
+                header={
+                  <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium text-slate-800">{h.name} <span className="font-normal text-slate-400">· {pluralize(h.floors.length, "floor")}</span></span>
+                    <Badge tone="slate">{pluralize(h.count, "student")}</Badge>
+                  </div>
+                }
+              >
+                <div className="space-y-2 border-l-2 border-slate-100 pl-3">
+                  {h.floors.map((f) => (
+                    <Collapsible
+                      key={f.id}
+                      forceOpen={!!q}
+                      header={
+                        <div className="flex flex-1 items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-slate-700">{f.name}</span>
+                          <Badge tone="slate">{pluralize(f.count, "student")}</Badge>
+                        </div>
+                      }
+                    >
+                      <div className="space-y-2 border-l-2 border-slate-100 pl-3">
+                        {f.rooms.map((r) => (
+                          <Collapsible
+                            key={r.id}
+                            forceOpen={!!q}
+                            header={
+                              <div className="flex flex-1 items-center justify-between gap-2">
+                                <span className="text-sm text-slate-600">Room {r.roomNo}</span>
+                                <Badge tone="slate">{pluralize(r.count, "student")}</Badge>
+                              </div>
+                            }
+                          >
+                            {r.filteredOccupants.length === 0 ? <p className="text-xs text-slate-400">No occupants.</p> : <StudentRows students={r.filteredOccupants} showClass />}
+                          </Collapsible>
+                        ))}
+                        {f.rooms.length === 0 && <p className="text-xs text-slate-400">No rooms with matches.</p>}
+                      </div>
+                    </Collapsible>
+                  ))}
+                </div>
+              </Collapsible>
+            </Card>
+          ))
+        )}
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Day scholars</p>
+        {dayScholars.length === 0 ? (
+          <EmptyNote text="No day scholars." />
+        ) : (
+          <div className="space-y-2">
+            {filteredDayScholars.map((d) => (
+              <Card key={d.classId || "unassigned"} className="p-3">
+                <Collapsible
+                  forceOpen={!!q}
+                  header={
+                    <div className="flex flex-1 items-center justify-between gap-2">
+                      <span className="font-medium text-slate-800">{d.className}</span>
+                      <Badge tone="slate">{pluralize(d.count, "student")}</Badge>
+                    </div>
+                  }
+                >
+                  <StudentRows students={d.filteredStudents} />
+                </Collapsible>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Both endpoints are fetched once up front (not re-fetched on toggle) so
+// flipping between College view and Hostel view is instant.
+function ViewStudents({ me }) {
+  const [view, setView] = useState("college");
+  const [query, setQuery] = useState("");
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [byClass, byHostel] = await Promise.all([api.getStudentsByClass(), api.getStudentsByHostel()]);
+        if (!cancelled) setData({ classes: byClass.classes, hostels: byHostel.hostels, dayScholars: byHostel.dayScholars });
+      } catch (e) {
+        if (!cancelled) setError(e.message || "Couldn't load students");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div>
+      <SectionTitle icon={ListTree} title="View students" subtitle="Browse by class, or drill down through the hostel structure. Read-only." />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+          <button onClick={() => setView("college")} className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${view === "college" ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>College view</button>
+          <button onClick={() => setView("hostel")} className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${view === "hostel" ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>Hostel view</button>
+        </div>
+      </div>
+      <SearchBox value={query} onChange={setQuery} placeholder="Search by name or roll number..." />
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      {!error && !data && <div className="grid h-40 place-items-center text-slate-400"><Loader2 className="animate-spin" size={18} /></div>}
+      {data && (view === "college" ? (
+        <CollegeStudentsView classes={data.classes} query={query} role={me.role} />
+      ) : (
+        <HostelStudentsView hostels={data.hostels} dayScholars={data.dayScholars} query={query} role={me.role} />
+      ))}
     </div>
   );
 }

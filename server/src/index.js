@@ -14,6 +14,7 @@ import { changesRouter } from "./routes/changes.js";
 import { structureRouter } from "./routes/structure.js";
 import { attendanceRouter } from "./routes/attendance.js";
 import { studentsRouter } from "./routes/students.js";
+import { studentViewsRouter } from "./routes/studentViews.js";
 import { usersRouter } from "./routes/users.js";
 import { excelRouter } from "./routes/excel.js";
 
@@ -42,6 +43,7 @@ app.use("/api", changesRouter);
 app.use("/api", structureRouter);
 app.use("/api", attendanceRouter);
 app.use("/api", studentsRouter);
+app.use("/api", studentViewsRouter);
 app.use("/api", usersRouter);
 app.use("/api", excelRouter);
 

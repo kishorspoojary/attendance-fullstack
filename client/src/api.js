@@ -88,6 +88,10 @@ export const api = {
   editStructureBatch: (id, payload) => request(`/structure/batch/${id}`, { method: "PUT", body: payload }),
   sendBackStructureBatch: (id, reason) => request(`/structure/batch/${id}/send-back`, { method: "POST", body: { reason } }),
 
+  // ---- Browse students (Database Manager and AO, read-only) ----
+  getStudentsByClass: () => request("/students/by-class"),
+  getStudentsByHostel: () => request("/students/by-hostel"),
+
   // ---- Daily attendance workflow ----
   setAbsence: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
   confirmAbsent: (date, classId, studentId) => request(`/attendance/${date}/${classId}/confirm`, { method: "POST", body: { studentId } }),
