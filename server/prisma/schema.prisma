@@ -158,13 +158,19 @@ model Student {
 // (Warden/LAI/DO/Incharge Teacher) get created — see type "create_staff".
 model PendingChange {
   id            String   @id @default(cuid())
-  type          String // e.g. "add_student", "create_staff", "bulk_add_students" — see applyChange.js
+  // e.g. "add_student", "create_staff", "bulk_add_students" — see applyChange.js.
+  // "structure_batch" is the one type that bundles many creates (hostels ->
+  // floors -> rooms, college floors -> classrooms) into a single row instead
+  // of one PendingChange per item — see structureBatch.js and applyChange.js.
+  type          String
   summary       String // short human-readable description shown in the AO's queue
   payload       Json // the data needed to apply the change; shape depends on `type`
   requestedById String
   requestedBy   User     @relation(fields: [requestedById], references: [id])
-  status        String   @default("pending") // pending | approved | rejected
-  reason        String? // filled in if an AO rejects it
+  // pending | approved | rejected | sent_back (sent_back is structure_batch-only —
+  // see routes/structure.js; other types only ever get approved/rejected)
+  status        String   @default("pending")
+  reason        String? // why an AO rejected it, or why a structure_batch was sent back for edits
   createdAt     DateTime @default(now())
 }
 

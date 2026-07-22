@@ -108,6 +108,7 @@ const TONES = {
   emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
   rose: "bg-rose-50 text-rose-700 border-rose-200",
   amber: "bg-amber-50 text-amber-700 border-amber-200",
+  blue: "bg-blue-50 text-blue-700 border-blue-200",
 };
 function Badge({ tone = "slate", children }) {
   return <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium ${TONES[tone]}`}>{children}</span>;
@@ -203,9 +204,9 @@ function SentBackBanner({ record }) {
 // A small inline "click, then confirm" control for actions that need a
 // yes/no guard but not a reason — freeze/unfreeze accounts, etc. Same
 // no-modal-component approach as SendBackButton below.
-function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm }) {
+function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm, disabled }) {
   const [open, setOpen] = useState(false);
-  if (!open) return <Btn size="touch" variant={variant} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
+  if (!open) return <Btn size="touch" variant={variant} disabled={disabled} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
   return (
     <div className="inline-flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Are you sure?</span>
@@ -682,6 +683,11 @@ export default function App() {
   // time they open the app is the point.
   const [showGreeting, setShowGreeting] = useState(true);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  // The structure_batch PendingChange row currently reopened for editing —
+  // set by MyChanges's "Edit and resubmit" button, cleared once StructureAdmin
+  // submits or the Database Manager cancels. Lives here (not inside
+  // StructureAdmin) because it's set from one tab and consumed by another.
+  const [editBatch, setEditBatch] = useState(null);
   const date = todayStr();
 
   // The one function every mutation in this app goes through: call the
@@ -846,11 +852,11 @@ export default function App() {
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
               {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
               {activeTab === "students" && <StudentsAdmin state={state} runAction={runAction} />}
-              {activeTab === "structure" && <StructureAdmin state={state} runAction={runAction} />}
+              {activeTab === "structure" && <StructureAdmin state={state} runAction={runAction} editBatch={editBatch} onDoneEditing={() => setEditBatch(null)} />}
               {activeTab === "assign" && <AssignAdmin state={state} runAction={runAction} />}
               {activeTab === "createstaff" && <CreateStaffAdmin state={state} runAction={runAction} />}
               {activeTab === "absentees" && <AbsenteesView state={state} />}
-              {activeTab === "mychanges" && <MyChanges state={state} me={me} />}
+              {activeTab === "mychanges" && <MyChanges state={state} me={me} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Incharge Teacher" note="Lists appear once the Discipline Officer has verified them. Any Incharge Teacher on the floor can file this." />}
@@ -1066,6 +1072,91 @@ function LeadershipSetup({ state, runAction }) {
 /* ---------------------------------------------------------------- */
 /* 5b. AO                                                              */
 /* ---------------------------------------------------------------- */
+// Best-effort "where does this live" breadcrumb for a single-item pending
+// change — e.g. add_room -> ["Boys Hostel A", "Ground Floor"], rendered as
+// "→ Boys Hostel A → Ground Floor" next to the change's summary. Only the
+// types with a real parent chain return anything; top-level creates
+// (add_hostel, create_staff, ...) and structure_batch (which gets its own
+// full tree — see StructureBatchTree) return an empty array.
+function pendingChangeParentPath(state, c) {
+  const p = c.payload || {};
+  const hostelName = (id) => state.hostels.find((h) => h.id === id)?.name;
+  switch (c.type) {
+    case "add_hostel_floor":
+      return [hostelName(p.hostelId)].filter(Boolean);
+    case "add_room": {
+      const floor = state.hostelFloors.find((f) => f.id === p.hostelFloorId);
+      return [floor && hostelName(floor.hostelId), floor?.name].filter(Boolean);
+    }
+    case "add_class":
+      return [state.collegeFloors.find((f) => f.id === p.collegeFloorId)?.name].filter(Boolean);
+    case "assign_warden":
+    case "assign_do":
+    case "assign_teacher":
+    case "assign_lai":
+      return [state.staff.find((s) => s.id === p.staffId)?.name].filter(Boolean);
+    case "add_student": {
+      const cls = state.classes.find((cl) => cl.id === p.classId);
+      const parts = [cls?.name];
+      const room = p.roomId && state.hostelRooms.find((r) => r.id === p.roomId);
+      const floor = room && state.hostelFloors.find((f) => f.id === room.hostelFloorId);
+      if (floor) parts.push(hostelName(floor.hostelId), floor.name, room.roomNo);
+      return parts.filter(Boolean);
+    }
+    case "edit_student":
+    case "delete_student": {
+      const student = state.students.find((s) => s.id === p.studentId);
+      const cls = student && state.classes.find((cl) => cl.id === student.classId);
+      return [cls?.name].filter(Boolean);
+    }
+    default:
+      return [];
+  }
+}
+function ParentPath({ state, change }) {
+  const path = pendingChangeParentPath(state, change);
+  if (path.length === 0) return null;
+  return <p className="mt-0.5 text-xs text-slate-400">→ {path.join(" → ")}</p>;
+}
+
+// Read-only tree view of a structure_batch payload — the same shape
+// StructureAdmin's builder produces, rendered flat for the AO to review.
+// Existing parents (referenced by id, not created) are muted with an
+// "existing" tag, same convention as the builder itself.
+function StructureBatchTree({ payload }) {
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-sm">
+      {(payload.hostels || []).map((h, i) => (
+        <div key={`h${i}`}>
+          <div className="flex items-center gap-2 font-medium text-slate-700">
+            {h.name || "(unnamed hostel)"} {h.existingHostelId && <Badge tone="slate">existing</Badge>}
+          </div>
+          {(h.floors || []).length > 0 && (
+            <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-3">
+              {h.floors.map((f, j) => (
+                <div key={`f${j}`}>
+                  <div className="flex items-center gap-2 text-slate-600">
+                    {f.name || "(unnamed floor)"} {f.existingFloorId && <Badge tone="slate">existing</Badge>}
+                  </div>
+                  {f.rooms?.length > 0 && <div className="text-xs text-slate-500">Rooms: {f.rooms.join(", ")}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+      {(payload.collegeFloors || []).map((cf, i) => (
+        <div key={`cf${i}`}>
+          <div className="flex items-center gap-2 font-medium text-slate-700">
+            {cf.name || "(unnamed college floor)"} {cf.existingCollegeFloorId && <Badge tone="slate">existing</Badge>}
+          </div>
+          {cf.classrooms?.length > 0 && <div className="ml-4 mt-1 text-xs text-slate-500">Classes: {cf.classrooms.join(", ")}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AOApprovals({ state, runAction }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
   // Only ever set for an approved create_staff change — that's the only
@@ -1080,10 +1171,13 @@ function AOApprovals({ state, runAction }) {
     if (result?.password) setNewStaffPassword({ name: c.payload?.name || "the new account", password: result.password });
   };
   const reject = (c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected");
+  const sendBackBatch = (c, reason) => runAction(() => api.sendBackStructureBatch(c.id, reason), "Sent back for edits");
+
+  const decisionTone = (status) => (status === "approved" ? "emerald" : status === "sent_back" ? "amber" : "rose");
 
   return (
     <div>
-      <SectionTitle icon={ShieldCheck} title="Master data approvals" subtitle="Every Database Manager change — including new staff accounts — is applied only after your approval." />
+      <SectionTitle icon={ShieldCheck} title="Master data approvals" subtitle="Every Database Manager change — including new staff accounts and structure batches — is applied only after your approval." />
       {newStaffPassword && (
         <Card className="mb-6 border-amber-200 bg-amber-50 p-4">
           <div className="flex items-start justify-between gap-3">
@@ -1099,31 +1193,53 @@ function AOApprovals({ state, runAction }) {
       )}
       {pending.length === 0 && <EmptyNote text="No pending changes right now." />}
       <div className="space-y-3">
-        {pending.map((c) => (
-          <Card key={c.id} className="p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="font-medium text-slate-800">{c.summary}</div>
-                <div className="mt-0.5 text-xs text-slate-500">
-                  Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}
-                  {c.type === "create_staff" && c.payload?.loginKey && <> · assigned key <span className="font-display">{c.payload.loginKey}</span></>}
+        {pending.map((c) => {
+          if (c.type === "structure_batch") {
+            const counts = structureBatchCounts(c.payload);
+            return (
+              <Card key={c.id} className="p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="mb-1"><Badge tone="blue">Structure batch</Badge></div>
+                    <div className="font-medium text-slate-800">New hostel structure — {c.summary}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">Requested by {state.staff.find((s) => s.id === c.requestedById)?.name || "someone"} · {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                  </div>
+                </div>
+                <StructureBatchTree payload={c.payload} />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <SendBackButton onSend={(reason) => sendBackBatch(c, reason)} />
+                  <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve all — create {pluralize(counts.total, "record")}</Btn>
+                </div>
+              </Card>
+            );
+          }
+          return (
+            <Card key={c.id} className="p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-slate-800">{c.summary}</div>
+                  <ParentPath state={state} change={c} />
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}
+                    {c.type === "create_staff" && c.payload?.loginKey && <> · assigned key <span className="font-display">{c.payload.loginKey}</span></>}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
+                  <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
                 </div>
               </div>
-              <div className="flex gap-2">
-                <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
-                <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
-              </div>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
       </div>
       <div className="mt-8">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent decisions</p>
         <div className="space-y-2">
           {state.pendingChanges.filter((c) => c.status !== "pending").slice(0, 6).map((c) => (
             <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
-              <span className="text-slate-600">{c.summary}</span>
-              <Badge tone={c.status === "approved" ? "emerald" : "rose"}>{c.status}</Badge>
+              <span className="text-slate-600">{c.type === "structure_batch" ? `Structure batch — ${c.summary}` : c.summary}</span>
+              <Badge tone={decisionTone(c.status)}>{c.status.replace("_", " ")}</Badge>
             </div>
           ))}
         </div>
@@ -1499,70 +1615,348 @@ function StudentsAdmin({ state, runAction }) {
 // Hostel structure is three levels (Hostel -> Floor -> Room); college
 // structure is two (CollegeFloor -> Class). Each level's dropdown is
 // filtered by whatever's selected above it.
-function StructureAdmin({ state, runAction }) {
-  const [hostelName, setHostelName] = useState("");
-  const [floorHostelId, setFloorHostelId] = useState(""); const [floorName, setFloorName] = useState("");
-  const [roomHostelId, setRoomHostelId] = useState(""); const [roomFloorId, setRoomFloorId] = useState(""); const [roomNo, setRoomNo] = useState("");
-  const [collegeFloorName, setCollegeFloorName] = useState("");
-  const [classFloorId, setClassFloorId] = useState(""); const [className, setClassName] = useState("");
+/* ---------------------------------------------------------------- */
+/* Structure batches — draft-tree helpers, shared with AOApprovals    */
+/* below (structureBatchCounts) and MyChanges (the edit/resubmit flow) */
+/* ---------------------------------------------------------------- */
+let structureDraftIdSeq = 0;
+const uid = () => `d${structureDraftIdSeq++}`;
 
-  const floorsForHostel = (hostelId) => state.hostelFloors.filter((f) => f.hostelId === hostelId);
+function pluralize(count, word, pluralWord) {
+  return `${count} ${count === 1 ? word : pluralWord || `${word}s`}`;
+}
+
+// "001-010" -> ["001",...,"010"] (zero-padded to match the first number's
+// width); plain comma-separated entries pass through unchanged. Anything
+// that isn't a clean numeric range (letters, single values, malformed
+// ranges) is left as its own literal entry rather than rejected — room and
+// class labels aren't always numeric.
+function expandListInput(raw) {
+  const tokens = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const out = [];
+  for (const t of tokens) {
+    const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const start = parseInt(m[1], 10), end = parseInt(m[2], 10), width = m[1].length;
+      if (end >= start && end - start < 500) {
+        for (let n = start; n <= end; n++) out.push(String(n).padStart(width, "0"));
+        continue;
+      }
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+// PendingChange.payload -> local draft tree (adds a React-key-only `_id` to
+// every hostel/floor/college-floor entry; rooms/classrooms are plain string
+// arrays). Used both for a brand-new draft and to prefill the builder when
+// resuming a sent-back batch.
+function payloadToDraft(payload) {
+  return {
+    hostels: (payload?.hostels || []).map((h) => ({
+      _id: uid(), existingHostelId: h.existingHostelId || null, name: h.name || "",
+      floors: (h.floors || []).map((f) => ({
+        _id: uid(), existingFloorId: f.existingFloorId || null, name: f.name || "", rooms: [...(f.rooms || [])],
+      })),
+    })),
+    collegeFloors: (payload?.collegeFloors || []).map((cf) => ({
+      _id: uid(), existingCollegeFloorId: cf.existingCollegeFloorId || null, name: cf.name || "", classrooms: [...(cf.classrooms || [])],
+    })),
+  };
+}
+// Draft tree -> the payload shape the API expects (strips `_id`, and each
+// entry carries either its name or its existing-parent id, never both).
+function draftToPayload(draft) {
+  return {
+    hostels: draft.hostels.map((h) => ({
+      ...(h.existingHostelId ? { existingHostelId: h.existingHostelId } : { name: h.name }),
+      floors: h.floors.map((f) => ({
+        ...(f.existingFloorId ? { existingFloorId: f.existingFloorId } : { name: f.name }),
+        rooms: f.rooms,
+      })),
+    })),
+    collegeFloors: draft.collegeFloors.map((cf) => ({
+      ...(cf.existingCollegeFloorId ? { existingCollegeFloorId: cf.existingCollegeFloorId } : { name: cf.name }),
+      classrooms: cf.classrooms,
+    })),
+  };
+}
+// How many rows a batch will actually CREATE — existing parents referenced
+// by id don't count, only the new hostels/floors/rooms/college
+// floors/classrooms in it. Mirrors server/src/structureBatch.js's counting
+// exactly (frontend and backend are separate projects, so this is
+// deliberately duplicated rather than imported — see the STAGES comment
+// near the top of this file for the same tradeoff elsewhere).
+function structureBatchCounts(payload) {
+  let hostels = 0, floors = 0, rooms = 0, collegeFloors = 0, classrooms = 0;
+  for (const h of payload?.hostels || []) {
+    if (!h.existingHostelId) hostels++;
+    for (const f of h.floors || []) {
+      if (!f.existingFloorId) floors++;
+      rooms += (f.rooms || []).length;
+    }
+  }
+  for (const cf of payload?.collegeFloors || []) {
+    if (!cf.existingCollegeFloorId) collegeFloors++;
+    classrooms += (cf.classrooms || []).length;
+  }
+  return { hostels, floors, rooms, collegeFloors, classrooms, total: hostels + floors + rooms + collegeFloors + classrooms };
+}
+
+// A chip list + text input shared by rooms (under a floor) and classrooms
+// (under a college floor) — comma lists and numeric ranges expand live via
+// expandListInput, previewed before they're actually added.
+function ListChipInput({ items, onChange, placeholder }) {
+  const [text, setText] = useState("");
+  const preview = text.trim() ? expandListInput(text) : [];
+  const commit = () => {
+    if (preview.length === 0) return;
+    const seen = new Set(items.map((i) => i.toLowerCase()));
+    const additions = preview.filter((p) => { const k = p.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+    if (additions.length) onChange([...items, ...additions]);
+    setText("");
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((v) => (
+          <span key={v} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+            {v}
+            <button onClick={() => onChange(items.filter((i) => i !== v))} className="text-slate-400 hover:text-rose-600" aria-label={`Remove ${v}`}><X size={11} /></button>
+          </span>
+        ))}
+        {items.length === 0 && <span className="text-xs text-slate-400">None yet</span>}
+      </div>
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <input value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+          placeholder={placeholder} className={`${inputCls} text-xs`} />
+        <Btn size="sm" variant="outline" onClick={commit} disabled={preview.length === 0}><Plus size={12} /></Btn>
+      </div>
+      {preview.length > 0 && <p className="mt-1 text-[11px] text-slate-400">Will add: {preview.join(", ")}</p>}
+    </div>
+  );
+}
+
+function FloorDraftRow({ floor, onChange, onRemove }) {
+  const isExisting = !!floor.existingFloorId;
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        {isExisting ? (
+          <div className="flex items-center gap-2"><span className="text-sm font-medium text-slate-600">{floor.name}</span><Badge tone="slate">existing</Badge></div>
+        ) : (
+          <input className={`${inputCls} max-w-[14rem]`} value={floor.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="New floor name" />
+        )}
+        <button onClick={onRemove} className="shrink-0 rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label="Remove floor"><Trash2 size={13} /></button>
+      </div>
+      <div className="mt-2"><ListChipInput items={floor.rooms} onChange={(rooms) => onChange({ rooms })} placeholder="Room no. e.g. 001-010 or 101,102" /></div>
+    </div>
+  );
+}
+
+function HostelDraftCard({ hostel, allHostelFloors, onChange, onRemove }) {
+  const [open, setOpen] = useState(true);
+  const isExisting = !!hostel.existingHostelId;
+  const roomCount = hostel.floors.reduce((n, f) => n + f.rooms.length, 0);
+  const existingFloorOptions = isExisting
+    ? allHostelFloors.filter((f) => f.hostelId === hostel.existingHostelId && !hostel.floors.some((df) => df.existingFloorId === f.id))
+    : [];
+
+  const addNewFloor = () => onChange({ ...hostel, floors: [...hostel.floors, { _id: uid(), existingFloorId: null, name: "", rooms: [] }] });
+  const addExistingFloor = (floorId) => {
+    const f = allHostelFloors.find((x) => x.id === floorId);
+    if (f) onChange({ ...hostel, floors: [...hostel.floors, { _id: uid(), existingFloorId: f.id, name: f.name, rooms: [] }] });
+  };
+  const updateFloor = (fid, patch) => onChange({ ...hostel, floors: hostel.floors.map((f) => (f._id === fid ? { ...f, ...patch } : f)) });
+  const removeFloor = (fid) => onChange({ ...hostel, floors: hostel.floors.filter((f) => f._id !== fid) });
+
+  return (
+    <Card className="p-3">
+      <div className="flex items-start justify-between gap-2">
+        <button onClick={() => setOpen((o) => !o)} className="flex flex-1 items-center gap-2 text-left">
+          <ChevronDown size={15} className={`mt-0.5 shrink-0 text-slate-400 transition-transform ${open ? "" : "-rotate-90"}`} />
+          <div className="min-w-0 flex-1">
+            {isExisting ? (
+              <div className="flex items-center gap-2"><span className="truncate text-sm font-semibold text-slate-700">{hostel.name}</span><Badge tone="slate">existing</Badge></div>
+            ) : (
+              <input className={`${inputCls} max-w-xs`} value={hostel.name} onClick={(e) => e.stopPropagation()} onChange={(e) => onChange({ ...hostel, name: e.target.value })} placeholder="New hostel name" />
+            )}
+            <p className="mt-0.5 text-xs text-slate-400">{pluralize(hostel.floors.length, "floor")} · {pluralize(roomCount, "room")}</p>
+          </div>
+        </button>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <Btn size="sm" variant="outline" onClick={addNewFloor}><Plus size={11} /> Floor</Btn>
+          {existingFloorOptions.length > 0 && (
+            <select className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600" value=""
+              onChange={(e) => { if (e.target.value) addExistingFloor(e.target.value); e.target.value = ""; }}>
+              <option value="">+ Existing floor...</option>
+              {existingFloorOptions.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          )}
+          <button onClick={onRemove} className="rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label="Remove hostel"><Trash2 size={14} /></button>
+        </div>
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2 border-l-2 border-slate-100 pl-3">
+          {hostel.floors.map((f) => <FloorDraftRow key={f._id} floor={f} onChange={(patch) => updateFloor(f._id, patch)} onRemove={() => removeFloor(f._id)} />)}
+          {hostel.floors.length === 0 && <p className="text-xs text-slate-400">No floors yet — add one.</p>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CollegeFloorDraftCard({ floor, onChange, onRemove }) {
+  const isExisting = !!floor.existingCollegeFloorId;
+  return (
+    <Card className="p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {isExisting ? (
+            <div className="flex items-center gap-2"><span className="text-sm font-semibold text-slate-700">{floor.name}</span><Badge tone="slate">existing</Badge></div>
+          ) : (
+            <input className={`${inputCls} max-w-xs`} value={floor.name} onChange={(e) => onChange({ ...floor, name: e.target.value })} placeholder="New college floor name" />
+          )}
+          <p className="mt-0.5 text-xs text-slate-400">{pluralize(floor.classrooms.length, "class", "classes")}</p>
+        </div>
+        <button onClick={onRemove} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label="Remove college floor"><Trash2 size={14} /></button>
+      </div>
+      <div className="mt-3"><ListChipInput items={floor.classrooms} onChange={(classrooms) => onChange({ ...floor, classrooms })} placeholder="Class/batch name, comma separated" /></div>
+    </Card>
+  );
+}
+
+// Replaces the old "one form per item" screen: the whole hostel/floor/room
+// and college-floor/classroom structure is drafted locally as a tree and
+// sent to the AO as a single structure_batch PendingChange — see
+// server/src/structureBatch.js for how it's validated and applied.
+// editBatch/onDoneEditing let MyChanges reopen this prefilled with a
+// sent-back batch's payload (see the "Edit and resubmit" button there).
+function StructureAdmin({ state, runAction, editBatch, onDoneEditing }) {
+  const [draft, setDraft] = useState(() => (editBatch ? payloadToDraft(editBatch.payload) : { hostels: [], collegeFloors: [] }));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => { if (editBatch) setDraft(payloadToDraft(editBatch.payload)); }, [editBatch?.id]);
+
+  const isEditing = !!editBatch;
+  const payload = draftToPayload(draft);
+  const counts = structureBatchCounts(payload);
+
+  const addNewHostel = () => setDraft((d) => ({ ...d, hostels: [...d.hostels, { _id: uid(), existingHostelId: null, name: "", floors: [] }] }));
+  const addExistingHostel = (hostelId) => {
+    const h = state.hostels.find((x) => x.id === hostelId);
+    if (h) setDraft((d) => ({ ...d, hostels: [...d.hostels, { _id: uid(), existingHostelId: h.id, name: h.name, floors: [] }] }));
+  };
+  const updateHostel = (hid, next) => setDraft((d) => ({ ...d, hostels: d.hostels.map((h) => (h._id === hid ? next : h)) }));
+  const removeHostel = (hid) => setDraft((d) => ({ ...d, hostels: d.hostels.filter((h) => h._id !== hid) }));
+
+  const addNewCollegeFloor = () => setDraft((d) => ({ ...d, collegeFloors: [...d.collegeFloors, { _id: uid(), existingCollegeFloorId: null, name: "", classrooms: [] }] }));
+  const addExistingCollegeFloor = (floorId) => {
+    const f = state.collegeFloors.find((x) => x.id === floorId);
+    if (f) setDraft((d) => ({ ...d, collegeFloors: [...d.collegeFloors, { _id: uid(), existingCollegeFloorId: f.id, name: f.name, classrooms: [] }] }));
+  };
+  const updateCollegeFloor = (fid, next) => setDraft((d) => ({ ...d, collegeFloors: d.collegeFloors.map((f) => (f._id === fid ? next : f)) }));
+  const removeCollegeFloor = (fid) => setDraft((d) => ({ ...d, collegeFloors: d.collegeFloors.filter((f) => f._id !== fid) }));
+
+  const existingHostelOptions = state.hostels.filter((h) => !draft.hostels.some((dh) => dh.existingHostelId === h.id));
+  const existingCollegeFloorOptions = state.collegeFloors.filter((f) => !draft.collegeFloors.some((df) => df.existingCollegeFloorId === f.id));
+
+  const submit = async () => {
+    setError("");
+    setSubmitting(true);
+    try {
+      const result = isEditing ? await api.editStructureBatch(editBatch.id, payload) : await api.submitStructureBatch(payload);
+      await runAction(() => Promise.resolve(result), isEditing ? "Resent for AO approval" : "Sent for AO approval");
+      setDraft({ hostels: [], collegeFloors: [] });
+      if (isEditing) onDoneEditing();
+    } catch (e) {
+      setError(e.message || "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div>
-      <SectionTitle icon={Building2} title="Hostels & classes" subtitle="Add structure that students and staff can be assigned to. Start small — add more hostels, floors, and classes any time." />
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">1. Add a hostel</p>
-          <Field label="Hostel name"><input className={inputCls} value={hostelName} onChange={(e) => setHostelName(e.target.value)} /></Field>
-          <div className="mt-3"><Btn onClick={() => { if (!hostelName) return; runAction(() => api.proposeChange("add_hostel", `Add hostel ${hostelName}`, { name: hostelName }), "Sent to AO for approval"); setHostelName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
-        </Card>
+      <SectionTitle icon={Building2} title="Hostels & classes" subtitle="Build out the structure, then send it all to the AO for one approval. Nothing is created until then." />
 
-        <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">2. Add a floor to a hostel</p>
-          <div className="space-y-3">
-            <Field label="Hostel"><Select value={floorHostelId} onChange={setFloorHostelId} options={state.hostels.map((h) => ({ value: h.id, label: h.name }))} /></Field>
-            <Field label="Floor name"><input className={inputCls} value={floorName} onChange={(e) => setFloorName(e.target.value)} /></Field>
-          </div>
-          <div className="mt-3"><Btn disabled={!floorHostelId || !floorName} onClick={() => { runAction(() => api.proposeChange("add_hostel_floor", `Add floor ${floorName}`, { name: floorName, hostelId: floorHostelId }), "Sent to AO for approval"); setFloorName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
-        </Card>
-
-        <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">3. Add a room to a floor</p>
-          <div className="space-y-3">
-            <Field label="Hostel"><Select value={roomHostelId} onChange={(v) => { setRoomHostelId(v); setRoomFloorId(""); }} options={state.hostels.map((h) => ({ value: h.id, label: h.name }))} /></Field>
-            <Field label="Floor"><Select value={roomFloorId} onChange={setRoomFloorId} options={floorsForHostel(roomHostelId).map((f) => ({ value: f.id, label: f.name }))} /></Field>
-            <Field label="Room number"><input className={inputCls} value={roomNo} onChange={(e) => setRoomNo(e.target.value)} /></Field>
-          </div>
-          <div className="mt-3"><Btn disabled={!roomFloorId || !roomNo} onClick={() => { runAction(() => api.proposeChange("add_room", `Add room ${roomNo}`, { roomNo, hostelFloorId: roomFloorId }), "Sent to AO for approval"); setRoomNo(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
-        </Card>
-
-        <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">4. Add a college floor</p>
-          <Field label="Floor name"><input className={inputCls} value={collegeFloorName} onChange={(e) => setCollegeFloorName(e.target.value)} /></Field>
-          <div className="mt-3"><Btn disabled={!collegeFloorName} onClick={() => { runAction(() => api.proposeChange("add_college_floor", `Add college floor ${collegeFloorName}`, { name: collegeFloorName }), "Sent to AO for approval"); setCollegeFloorName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
-        </Card>
-
-        <Card className="p-4 md:col-span-2">
-          <p className="mb-3 text-sm font-semibold text-slate-700">5. Add a class / batch to a college floor</p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="College floor"><Select value={classFloorId} onChange={setClassFloorId} options={state.collegeFloors.map((f) => ({ value: f.id, label: f.name }))} /></Field>
-            <Field label="Class / batch name"><input className={inputCls} value={className} onChange={(e) => setClassName(e.target.value)} /></Field>
-          </div>
-          <div className="mt-3"><Btn disabled={!classFloorId || !className} onClick={() => { runAction(() => api.proposeChange("add_class", `Add class ${className}`, { name: className, collegeFloorId: classFloorId }), "Sent to AO for approval"); setClassName(""); }}><Plus size={14} /> Send for AO approval</Btn></div>
-        </Card>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Badge tone="amber">Draft — not sent yet</Badge>
+        <p className="text-xs text-slate-500">Add hostels, floors, and rooms freely. Nothing is created until the AO approves the whole batch.</p>
       </div>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
+      {isEditing && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <div><span className="font-medium">Editing a batch the AO sent back:</span> {editBatch.reason}</div>
+          <button onClick={onDoneEditing} className="text-xs font-medium text-amber-700 underline underline-offset-2">Cancel edit</button>
+        </div>
+      )}
+
+      {error && <p className="mb-3 text-sm text-rose-600">{error}</p>}
+
+      <div className="space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Hostels</p>
+        {draft.hostels.map((h) => (
+          <HostelDraftCard key={h._id} hostel={h} allHostelFloors={state.hostelFloors} onChange={(next) => updateHostel(h._id, next)} onRemove={() => removeHostel(h._id)} />
+        ))}
+        {draft.hostels.length === 0 && <EmptyNote text="No hostels in this draft yet." />}
+      </div>
+
+      <div className="mt-6 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">College floors</p>
+        {draft.collegeFloors.map((f) => (
+          <CollegeFloorDraftCard key={f._id} floor={f} onChange={(next) => updateCollegeFloor(f._id, next)} onRemove={() => removeCollegeFloor(f._id)} />
+        ))}
+        {draft.collegeFloors.length === 0 && <EmptyNote text="No college floors in this draft yet." />}
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
+        <Btn variant="outline" onClick={addNewHostel}><Plus size={14} /> Add hostel</Btn>
+        {existingHostelOptions.length > 0 && (
+          <select className={`${inputCls} w-auto`} value="" onChange={(e) => { if (e.target.value) addExistingHostel(e.target.value); e.target.value = ""; }}>
+            <option value="">+ Add floors/rooms to existing hostel...</option>
+            {existingHostelOptions.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+          </select>
+        )}
+        <Btn variant="outline" onClick={addNewCollegeFloor}><Plus size={14} /> Add college floor</Btn>
+        {existingCollegeFloorOptions.length > 0 && (
+          <select className={`${inputCls} w-auto`} value="" onChange={(e) => { if (e.target.value) addExistingCollegeFloor(e.target.value); e.target.value = ""; }}>
+            <option value="">+ Add classes to existing college floor...</option>
+            {existingCollegeFloorOptions.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+        )}
+        <div className="ml-auto">
+          <ConfirmButton
+            label={submitting ? "Sending..." : isEditing ? "Resend for AO approval" : "Send all for AO approval"}
+            confirmLabel="Confirm"
+            variant="primary"
+            icon={Check}
+            disabled={counts.total === 0 || submitting}
+            onConfirm={submit}
+          />
+        </div>
+      </div>
+      {counts.total > 0 && <p className="mt-2 text-right text-xs text-slate-400">Will create {pluralize(counts.total, "record")}: {[
+        counts.hostels && pluralize(counts.hostels, "hostel"),
+        counts.floors && pluralize(counts.floors, "floor"),
+        counts.rooms && pluralize(counts.rooms, "room"),
+        counts.collegeFloors && pluralize(counts.collegeFloors, "college floor"),
+        counts.classrooms && pluralize(counts.classrooms, "class", "classes"),
+      ].filter(Boolean).join(", ")}</p>}
+
+      <div className="mt-8 grid gap-4 md:grid-cols-2">
         <Card className="p-4">
-          <p className="mb-2 text-sm font-semibold text-slate-700">Current hostel structure</p>
+          <p className="mb-2 text-sm font-semibold text-slate-700">Already-approved hostel structure</p>
           <ul className="space-y-1 text-sm text-slate-600">
             {state.hostelRooms.map((r) => <li key={r.id}>{roomLabel(state, r.id)}</li>)}
             {state.hostelRooms.length === 0 && <li className="text-slate-400">No rooms yet.</li>}
           </ul>
         </Card>
         <Card className="p-4">
-          <p className="mb-2 text-sm font-semibold text-slate-700">Current classes</p>
+          <p className="mb-2 text-sm font-semibold text-slate-700">Already-approved classes</p>
           <ul className="space-y-1 text-sm text-slate-600">
             {state.classes.map((c) => {
               const floor = state.collegeFloors.find((f) => f.id === c.collegeFloorId);
@@ -1756,19 +2150,33 @@ function AbsenteesView({ state }) {
   );
 }
 
-function MyChanges({ state, me }) {
+function myChangeTone(status) {
+  return status === "approved" ? "emerald" : status === "rejected" ? "rose" : status === "sent_back" ? "amber" : "amber";
+}
+function MyChanges({ state, me, onEditBatch }) {
   const mine = state.pendingChanges.filter((c) => c.requestedById === me.id);
   return (
     <div>
       <SectionTitle icon={Clock} title="My requests" subtitle="Everything you've sent to the AO." />
       {mine.length === 0 && <EmptyNote text="You haven't submitted anything yet." />}
       <div className="space-y-2">
-        {mine.map((c) => (
-          <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
-            <span className="text-slate-700">{c.summary}</span>
-            <Badge tone={c.status === "approved" ? "emerald" : c.status === "rejected" ? "rose" : "amber"}>{c.status}</Badge>
-          </div>
-        ))}
+        {mine.map((c) => {
+          const isBatch = c.type === "structure_batch";
+          return (
+            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${isBatch && c.status === "sent_back" ? "border-amber-200" : ""}`}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-700">{isBatch ? `Structure batch — ${c.summary}` : c.summary}</span>
+                <Badge tone={myChangeTone(c.status)}>{c.status.replace("_", " ")}</Badge>
+              </div>
+              {isBatch && c.status === "sent_back" && (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2">
+                  <p className="text-xs text-amber-800"><span className="font-medium">AO's reason:</span> {c.reason}</p>
+                  <Btn size="sm" variant="outline" onClick={() => onEditBatch(c)}><Pencil size={12} /> Edit and resubmit</Btn>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

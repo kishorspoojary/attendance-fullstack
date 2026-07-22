@@ -11,6 +11,7 @@ import cors from "cors";
 import { authRouter } from "./routes/auth.js";
 import { stateRouter } from "./routes/state.js";
 import { changesRouter } from "./routes/changes.js";
+import { structureRouter } from "./routes/structure.js";
 import { attendanceRouter } from "./routes/attendance.js";
 import { studentsRouter } from "./routes/students.js";
 import { usersRouter } from "./routes/users.js";
@@ -38,6 +39,7 @@ app.get("/api/health", (req, res) => res.json({ ok: true })); // quick "is the s
 app.use("/api/auth", authRouter);
 app.use("/api", stateRouter);
 app.use("/api", changesRouter);
+app.use("/api", structureRouter);
 app.use("/api", attendanceRouter);
 app.use("/api", studentsRouter);
 app.use("/api", usersRouter);

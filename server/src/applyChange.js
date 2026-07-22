@@ -9,6 +9,7 @@
 // ============================================================================
 import bcrypt from "bcryptjs";
 import { generateTempPassword } from "./auth.js";
+import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
 
 // Returns undefined for most change types. create_staff is the one
 // exception — it returns { password }, the plaintext temp password for the
@@ -78,6 +79,18 @@ export async function applyChange(prisma, change) {
 
     case "add_class":
       await prisma.classroom.create({ data: { name: p.name, collegeFloorId: p.collegeFloorId } });
+      break;
+
+    // A whole draft tree of hostels/floors/rooms and college
+    // floors/classrooms, approved as one unit. The plan is rebuilt (and
+    // re-validated — names/parents could have changed since this was
+    // proposed) from inside the transaction, so a validation failure here
+    // rolls back every create in the batch rather than leaving it half done.
+    case "structure_batch":
+      await prisma.$transaction(async (tx) => {
+        const plan = await buildStructurePlan(tx, p);
+        await createFromStructurePlan(tx, plan);
+      });
       break;
 
     case "assign_warden":

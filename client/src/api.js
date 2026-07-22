@@ -83,6 +83,11 @@ export const api = {
   approveChange: (id) => request(`/changes/${id}/approve`, { method: "POST" }),
   rejectChange: (id, reason) => request(`/changes/${id}/reject`, { method: "POST", body: { reason } }),
 
+  // ---- Structure batches (Database Manager drafts, AO approves via approveChange above) ----
+  submitStructureBatch: (payload) => request("/structure/batch", { method: "POST", body: payload }),
+  editStructureBatch: (id, payload) => request(`/structure/batch/${id}`, { method: "PUT", body: payload }),
+  sendBackStructureBatch: (id, reason) => request(`/structure/batch/${id}/send-back`, { method: "POST", body: { reason } }),
+
   // ---- Daily attendance workflow ----
   setAbsence: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
   confirmAbsent: (date, classId, studentId) => request(`/attendance/${date}/${classId}/confirm`, { method: "POST", body: { studentId } }),
