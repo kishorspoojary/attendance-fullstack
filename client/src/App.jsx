@@ -1759,15 +1759,52 @@ function roomLabel(state, roomId) {
 function roomOptions(state) {
   return state.hostelRooms.map((r) => ({ value: r.id, label: roomLabel(state, r.id) }));
 }
+function hostelIdForRoom(state, roomId) {
+  const room = state.hostelRooms.find((r) => r.id === roomId);
+  const floor = room && state.hostelFloors.find((f) => f.id === room.hostelFloorId);
+  return floor?.hostelId || "";
+}
+function roomsForHostel(state, hostelId) {
+  return state.hostelRooms.filter((r) => state.hostelFloors.find((f) => f.id === r.hostelFloorId)?.hostelId === hostelId);
+}
+
+const DAY_SCHOLAR_VALUE = "DAY_SCHOLAR";
+// The merged "Day scholar or hostel" choice used by both the manual Add
+// form and the Edit modal — one select instead of a checkbox + a room
+// dropdown spanning every hostel, so picking a hostel narrows the room
+// choices to just that hostel's rooms (matches the per-class Excel
+// template's same C/D column split — see server/src/routes/excel.js).
+function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, onRoomChange }) {
+  return (
+    <>
+      <Field label="Day scholar / hostel">
+        <select className={inputCls} value={hostelOrDay} onChange={(e) => onHostelOrDayChange(e.target.value)}>
+          <option value="">Select...</option>
+          <option value={DAY_SCHOLAR_VALUE}>Day scholar</option>
+          {state.hostels.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+        </select>
+      </Field>
+      {hostelOrDay && hostelOrDay !== DAY_SCHOLAR_VALUE && (
+        <Field label="Room">
+          <Select value={roomId} onChange={onRoomChange} options={roomsForHostel(state, hostelOrDay).map((r) => ({ value: r.id, label: r.roomNo }))} />
+        </Field>
+      )}
+    </>
+  );
+}
 
 function StudentsAdmin({ state, runAction }) {
   const [name, setName] = useState(""); const [roll, setRoll] = useState("");
-  const [classId, setClassId] = useState(""); const [roomId, setRoomId] = useState("");
-  const [isLocal, setIsLocal] = useState(true);
+  const [classId, setClassId] = useState("");
+  const [hostelOrDay, setHostelOrDay] = useState(""); const [roomId, setRoomId] = useState("");
+  const [addError, setAddError] = useState("");
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");
+  const [excelClassId, setExcelClassId] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState(null);
+
+  const excelClassName = state.classes.find((c) => c.id === excelClassId)?.name || "";
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -1776,22 +1813,32 @@ function StudentsAdmin({ state, runAction }) {
     setImportBusy(true); setImportResult(null);
     try {
       const result = await api.importStudents(file);
-      setImportResult(result);
+      setImportResult(result); // { change, addedCount }
       if (result.addedCount > 0) await runAction(() => Promise.resolve(), `${result.addedCount} student(s) sent to AO for approval`);
     } catch (e2) {
-      setImportResult({ addedCount: 0, warnings: [], errors: [e2.message] });
+      setImportResult({ error: e2.message, errors: e2.errors || [] }); // e2.errors: per-row list — see api.js's uploadFile
     }
     setImportBusy(false);
   };
 
   const submitAdd = () => {
-    if (!name || !roll || !classId) return;
-    runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name, roll, classId, roomId: roomId || null, isLocal }), "Sent to AO for approval");
-    setName(""); setRoll(""); setClassId(""); setRoomId(""); setIsLocal(true);
+    setAddError("");
+    if (!name.trim() || !roll.trim() || !classId || !hostelOrDay) {
+      return setAddError("Fill in name, roll number, class, and whether they're a day scholar or hosteller.");
+    }
+    if (hostelOrDay !== DAY_SCHOLAR_VALUE && !roomId) return setAddError("Choose a room in that hostel.");
+    const rollKey = roll.trim().toLowerCase();
+    const dup = state.students.find((s) => s.classId === classId && s.roll.trim().toLowerCase() === rollKey);
+    if (dup) return setAddError(`Roll number "${roll.trim()}" already exists in this class (${dup.name}).`);
+
+    const isLocal = hostelOrDay === DAY_SCHOLAR_VALUE;
+    runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name: name.trim(), roll: roll.trim(), classId, roomId: isLocal ? null : roomId, isLocal }), "Sent to AO for approval");
+    setName(""); setRoll(""); setClassId(""); setHostelOrDay(""); setRoomId("");
   };
   const submitDelete = (s) => runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
   const submitEdit = () => {
-    runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: editing.roomId || null, isLocal: editing.isLocal } }), "Sent to AO for approval");
+    const isLocal = editing.hostelOrDay === DAY_SCHOLAR_VALUE;
+    runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: isLocal ? null : editing.roomId || null, isLocal } }), "Sent to AO for approval");
     setEditing(null);
   };
 
@@ -1810,40 +1857,41 @@ function StudentsAdmin({ state, runAction }) {
           <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label="Roll number"><input className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
           <Field label="Class / batch"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-          <Field label="Hostel room (optional)"><Select value={roomId} onChange={(v) => { setRoomId(v); setIsLocal(!v); }} options={roomOptions(state)} /></Field>
+          <HostelOrDayFields state={state} hostelOrDay={hostelOrDay} roomId={roomId} onHostelOrDayChange={(v) => { setHostelOrDay(v); setRoomId(""); }} onRoomChange={setRoomId} />
         </div>
-        <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
-          <input type="checkbox" checked={isLocal} onChange={(e) => setIsLocal(e.target.checked)} />
-          Local student (day scholar) — the Local Attendance Incharge handles them, not a Warden
-        </label>
+        {addError && <p className="mt-3 text-sm text-rose-600">{addError}</p>}
         <div className="mt-3"><Btn onClick={submitAdd}><Plus size={14} /> Send for AO approval</Btn></div>
       </Card>
 
       <Card className="mb-6 p-4">
         <p className="mb-1 text-sm font-semibold text-slate-700">Add many at once with Excel</p>
-        <p className="mb-3 text-xs text-slate-500">Download the template, fill it in (it includes a reference sheet with the exact class and room names already in the system), then upload it back. Everything you upload still goes to the AO for approval, just as one request instead of many.</p>
-        <div className="flex flex-wrap gap-2">
-          <Btn variant="outline" onClick={() => api.downloadStudentTemplate()}><FileDown size={14} /> Download template</Btn>
-          <Btn variant="outline" onClick={() => api.exportStudents()}><FileDown size={14} /> Export current list</Btn>
-          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#12324D] px-3.5 py-2 text-sm font-medium text-white hover:bg-[#0d2438]">
-            {importBusy ? <Loader2 className="animate-spin" size={14} /> : <FileUp size={14} />} Upload filled sheet
-            <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={importBusy} />
-          </label>
-        </div>
+        <p className="mb-3 text-xs text-slate-500">Templates are generated per class, with a dropdown for "Day scholar" vs. an approved hostel name so that column can't be mistyped. Everything you upload still goes to the AO for approval, just as one request instead of many.</p>
+        <div className="mb-3 max-w-xs"><Field label="Class"><Select value={excelClassId} onChange={setExcelClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field></div>
+        {state.classes.length === 0 ? (
+          <p className="text-xs text-amber-600">Add classes first in Hostels & classes.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="outline" disabled={!excelClassId} onClick={() => api.downloadStudentTemplate(excelClassId, excelClassName)}><FileDown size={14} /> Download template</Btn>
+            <Btn variant="outline" disabled={!excelClassId} onClick={() => api.exportStudents(excelClassId, excelClassName)}><FileDown size={14} /> Export current list</Btn>
+            <label className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium text-white ${importBusy ? "cursor-not-allowed bg-slate-300" : "cursor-pointer bg-[#12324D] hover:bg-[#0d2438]"}`}>
+              {importBusy ? <Loader2 className="animate-spin" size={14} /> : <FileUp size={14} />} Upload filled sheet
+              <input type="file" accept=".xlsx" className="hidden" onChange={handleUpload} disabled={importBusy} />
+            </label>
+          </div>
+        )}
         {importResult && (
-          <div className="mt-3 space-y-2 text-sm">
-            {importResult.addedCount > 0 && <p className="text-emerald-700">{importResult.addedCount} student(s) ready, pending AO approval.</p>}
-            {importResult.warnings?.length > 0 && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-amber-800">
-                {importResult.warnings.map((w, i) => <p key={i}>{w}</p>)}
-              </div>
-            )}
-            {importResult.errors?.length > 0 && (
-              <div className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-rose-800">
+          importResult.errors?.length > 0 ? (
+            <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
+              <p className="mb-2 text-sm font-medium text-rose-800">{importResult.error} Nothing was imported — fix these and re-upload.</p>
+              <div className="max-h-56 space-y-1 overflow-y-auto rounded bg-white/70 p-2 text-xs text-rose-700">
                 {importResult.errors.map((e, i) => <p key={i}>{e}</p>)}
               </div>
-            )}
-          </div>
+            </div>
+          ) : importResult.addedCount > 0 ? (
+            <p className="mt-3 text-sm text-emerald-700">{importResult.addedCount} student(s) ready, pending AO approval.</p>
+          ) : importResult.error ? (
+            <p className="mt-3 text-sm text-rose-600">{importResult.error}</p>
+          ) : null
         )}
       </Card>
 
@@ -1865,7 +1913,7 @@ function StudentsAdmin({ state, runAction }) {
                   <td className="px-4 py-2.5 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => setEditing({ ...s })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
+                      <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
                       <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
                     </div>
                   </td>
@@ -1885,11 +1933,7 @@ function StudentsAdmin({ state, runAction }) {
               <Field label="Name"><input className={inputCls} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
               <Field label="Roll number"><input className={inputCls} value={editing.roll} onChange={(e) => setEditing({ ...editing, roll: e.target.value })} /></Field>
               <Field label="Class / batch"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-              <Field label="Room"><Select value={editing.roomId || ""} onChange={(v) => setEditing({ ...editing, roomId: v })} options={roomOptions(state)} /></Field>
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={editing.isLocal} onChange={(e) => setEditing({ ...editing, isLocal: e.target.checked })} />
-                Local student (day scholar)
-              </label>
+              <HostelOrDayFields state={state} hostelOrDay={editing.hostelOrDay} roomId={editing.roomId || ""} onHostelOrDayChange={(v) => setEditing({ ...editing, hostelOrDay: v, roomId: "" })} onRoomChange={(v) => setEditing({ ...editing, roomId: v })} />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Btn variant="ghost" onClick={() => setEditing(null)}>Cancel</Btn>

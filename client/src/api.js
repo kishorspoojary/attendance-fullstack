@@ -6,6 +6,16 @@
 // ============================================================================
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
+// Only used to name the file the browser saves locally — doesn't need to
+// match the server's Content-Disposition byte-for-byte, just avoid
+// filesystem-unsafe characters. Mirrors server/src/routes/excel.js's own
+// sanitizeFilenamePart (frontend and backend are separate projects, so this
+// is deliberately duplicated rather than imported — see the STAGES comment
+// in App.jsx for the same tradeoff elsewhere).
+function sanitizeFilenamePart(s) {
+  return String(s || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "class";
+}
+
 function getToken() {
   return localStorage.getItem("attendance_token") || "";
 }
@@ -59,7 +69,11 @@ async function uploadFile(path, file) {
     body: formData,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Upload failed");
+  if (!res.ok) {
+    const err = new Error(data.error || "Upload failed");
+    err.errors = data.errors; // per-row validation errors, if any — see routes/excel.js
+    throw err;
+  }
   return data;
 }
 
@@ -113,8 +127,8 @@ export const api = {
   offboardUser: (id, body) => request(`/users/${id}/offboard`, { method: "POST", body }),
 
   // ---- Excel template / import / export (Database Manager only) ----
-  downloadStudentTemplate: () => downloadFile("/excel/students/template", "student-import-template.xlsx"),
-  exportStudents: () => downloadFile("/excel/students/export", "students-export.xlsx"),
+  downloadStudentTemplate: (classId, className) => downloadFile(`/excel/students/template?classId=${encodeURIComponent(classId)}`, `vigil_students_${sanitizeFilenamePart(className)}.xlsx`),
+  exportStudents: (classId, className) => downloadFile(`/excel/students/export?classId=${encodeURIComponent(classId)}`, `vigil_students_${sanitizeFilenamePart(className)}_export.xlsx`),
   importStudents: (file) => uploadFile("/excel/students/import", file),
   exportAbsentees: (date) => downloadFile(`/excel/absentees/export?date=${date}`, `absentees-${date}.xlsx`),
 

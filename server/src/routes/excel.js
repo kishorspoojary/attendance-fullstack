@@ -1,11 +1,19 @@
 // ============================================================================
-// Excel support for the Database Manager: download a blank template, upload
-// a filled one to bulk-add students, or export the current student list.
+// Excel support for the Database Manager: download a per-class template,
+// upload a filled one to bulk-add students to that class, or export a
+// class's current student list.
 //
 // Import still goes through the same PendingChange + AO-approval flow as
-// every other Database Manager action (see routes/changes.js) — a 200-row
-// spreadsheet becomes ONE PendingChange of type "bulk_add_students" rather
-// than 200 separate ones, so an AO can review and approve it in one click.
+// every other Database Manager action (see routes/changes.js) — a filled
+// sheet becomes ONE PendingChange of type "bulk_add_students" rather than
+// one per row, so an AO can review and approve it in one click.
+//
+// The template is generated per class rather than generic, because a
+// generic sheet let people type a class or hostel name that doesn't exist
+// ("class 10", "Boys Hostal A") and only find out at upload time. Making
+// the class implicit (baked into the file, not a column) and turning
+// "hostel or day scholar" into an in-cell dropdown makes most of that class
+// of typo simply impossible to enter in the first place.
 // ============================================================================
 import { Router } from "express";
 import multer from "multer";
@@ -16,64 +24,157 @@ import { requireAuth, requireRole } from "../auth.js";
 export const excelRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-const TEMPLATE_HEADERS = ["Name", "Roll Number", "Class / Batch", "Local or Hostel", "Hostel Name", "Hostel Floor", "Room Number"];
+const DAY_SCHOLAR = "Day scholar";
+const HEADERS = ["Roll no.", "Name", "Hostel / day scholar", "Room"];
+const TITLE_ROW = 1;
+const HEADER_ROW = 2;
+const FIRST_DATA_ROW = 3;
+const LAST_VALIDATED_ROW = FIRST_DATA_ROW + 497; // "generous" range per spec — ~500 rows total
 
 function sendWorkbook(res, workbook, filename) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   return workbook.xlsx.write(res);
 }
+function sanitizeFilenamePart(s) {
+  return String(s || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "class";
+}
+const norm = (s) => String(s ?? "").trim().toLowerCase();
 
-// A blank sheet with the right headers, plus a reference sheet listing the
-// exact class and room names already in the system — since import matches
-// by name, this is what tells the Database Manager what to type.
+// Writes the "Class: <name>" title (merged, frozen) and the hidden class-id
+// cell every downstream reader looks for — see readClassIdFromSheet(). Kept
+// out of the visible A:D columns entirely so it survives column reordering
+// or someone widening/narrowing the data area.
+function writeClassMarker(sheet, cls) {
+  sheet.getCell(`A${TITLE_ROW}`).value = `Class: ${cls.name}`;
+  sheet.getCell(`A${TITLE_ROW}`).font = { bold: true, size: 13 };
+  sheet.mergeCells(`A${TITLE_ROW}:D${TITLE_ROW}`);
+  sheet.getRow(TITLE_ROW).height = 22;
+  sheet.getCell(`F${TITLE_ROW}`).value = cls.id;
+  sheet.getColumn(6).hidden = true;
+  sheet.views = [{ state: "frozen", ySplit: HEADER_ROW }];
+}
+function readClassIdFromSheet(sheet) {
+  const v = sheet.getCell(`F${TITLE_ROW}`).value;
+  return v ? String(v).trim() : "";
+}
+
+function writeHeaderRow(sheet) {
+  const row = sheet.getRow(HEADER_ROW);
+  HEADERS.forEach((h, i) => { row.getCell(i + 1).value = h; });
+  row.font = { bold: true };
+  sheet.columns = [{ width: 14 }, { width: 24 }, { width: 26 }, { width: 12 }];
+}
+
+// Column C's in-cell dropdown: "Day scholar" first, then every approved
+// hostel name, sourced from a hidden column on the Reference sheet (a range
+// reference rather than an inline list, so it isn't limited by Excel's
+// ~255-char inline-list length once there are several hostels with long
+// names).
+function applyHostelDropdown(sheet, listRangeRef) {
+  for (let r = FIRST_DATA_ROW; r <= LAST_VALIDATED_ROW; r++) {
+    sheet.getCell(`C${r}`).dataValidation = {
+      type: "list",
+      allowBlank: false,
+      formulae: [listRangeRef],
+      showErrorMessage: true,
+      errorStyle: "stop",
+      errorTitle: "Invalid entry",
+      error: 'Choose "Day scholar" or one of the approved hostel names from the dropdown.',
+    };
+  }
+}
+
+// The read-only lookup sheet: a human-readable Hostel/Floor/Room table, plus
+// a hidden column holding the exact dropdown source list for column C.
+async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms) {
+  const ref = workbook.addWorksheet("Reference");
+  ref.getRow(1).values = ["Hostel", "Floor", "Room"];
+  ref.getRow(1).font = { bold: true };
+  for (const h of hostels) {
+    for (const f of hostelFloors.filter((x) => x.hostelId === h.id)) {
+      for (const room of hostelRooms.filter((x) => x.hostelFloorId === f.id)) {
+        ref.addRow([h.name, f.name, room.roomNo]);
+      }
+    }
+  }
+  ref.columns.forEach((col) => { col.width = 22; });
+
+  const dropdownOptions = [DAY_SCHOLAR, ...hostels.map((h) => h.name)];
+  ref.getCell("F1").value = "Valid entries for Students!C (internal — do not edit)";
+  dropdownOptions.forEach((opt, i) => { ref.getCell(`F${i + 2}`).value = opt; });
+  ref.getColumn(6).hidden = true;
+
+  await ref.protect("", { selectLockedCells: true, selectUnlockedCells: true });
+  return `'Reference'!$F$2:$F$${dropdownOptions.length + 1}`;
+}
+
+// A real example row, styled and roll-flagged so the upload endpoint can
+// reliably skip it if it's still there — see the "example" check in the
+// import route below.
+function addExampleRow(sheet, hostels, hostelFloors, hostelRooms) {
+  let exampleHostelOrDay = DAY_SCHOLAR;
+  let exampleRoom = "";
+  if (hostels.length > 0) {
+    const firstHostel = hostels[0];
+    const floorsOfHostel = hostelFloors.filter((f) => f.hostelId === firstHostel.id);
+    const room = hostelRooms.find((r) => floorsOfHostel.some((f) => f.id === r.hostelFloorId));
+    if (room) { exampleHostelOrDay = firstHostel.name; exampleRoom = room.roomNo; }
+  }
+  const row = sheet.getRow(FIRST_DATA_ROW);
+  row.values = { 1: "EXAMPLE", 2: "Example Student — delete this row", 3: exampleHostelOrDay, 4: exampleRoom };
+  row.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { italic: true, color: { argb: "FF888888" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
+  });
+}
+
 excelRouter.get("/excel/students/template", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
-  const [classes, hostels, hostelFloors, hostelRooms] = await Promise.all([
-    prisma.classroom.findMany(), prisma.hostel.findMany(), prisma.hostelFloor.findMany(), prisma.hostelRoom.findMany(),
+  const { classId } = req.query;
+  if (!classId) return res.status(400).json({ error: "classId is required" });
+  const cls = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!cls) return res.status(404).json({ error: "Class not found" });
+
+  const [hostels, hostelFloors, hostelRooms] = await Promise.all([
+    prisma.hostel.findMany({ orderBy: { name: "asc" } }),
+    prisma.hostelFloor.findMany({ orderBy: { name: "asc" } }),
+    prisma.hostelRoom.findMany({ orderBy: { roomNo: "asc" } }),
   ]);
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Students");
-  sheet.addRow(TEMPLATE_HEADERS).font = { bold: true };
-  sheet.addRow(["Rahul Verma", "10A-01", "Class 10-A", "Hostel", "Hostel Block A", "Hostel Floor 1", "101"]);
-  sheet.addRow(["Meena Joshi", "10A-04", "Class 10-A", "Local", "", "", ""]);
-  sheet.columns.forEach((col) => { col.width = 20; });
+  writeClassMarker(sheet, cls);
+  writeHeaderRow(sheet);
+  addExampleRow(sheet, hostels, hostelFloors, hostelRooms);
 
-  const ref = workbook.addWorksheet("Reference - valid names");
-  ref.addRow(["Existing class / batch names"]).font = { bold: true };
-  classes.forEach((c) => ref.addRow([c.name]));
-  ref.addRow([]);
-  ref.addRow(["Existing hostel / floor / room combinations"]).font = { bold: true };
-  hostelRooms.forEach((r) => {
-    const floor = hostelFloors.find((f) => f.id === r.hostelFloorId);
-    const hostel = floor && hostels.find((h) => h.id === floor.hostelId);
-    ref.addRow([hostel?.name || "?", floor?.name || "?", r.roomNo]);
-  });
-  ref.columns.forEach((col) => { col.width = 24; });
+  const listRangeRef = await addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms);
+  applyHostelDropdown(sheet, listRangeRef);
 
-  await sendWorkbook(res, workbook, "student-import-template.xlsx");
+  await sendWorkbook(res, workbook, `vigil_students_${sanitizeFilenamePart(cls.name)}.xlsx`);
 });
 
-// Every student currently in the system, in the same column shape as the
-// template — handy both as a backup and as a starting point for edits.
 excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
-  const [students, classes, hostels, hostelFloors, hostelRooms] = await Promise.all([
-    prisma.student.findMany(), prisma.classroom.findMany(), prisma.hostel.findMany(), prisma.hostelFloor.findMany(), prisma.hostelRoom.findMany(),
-  ]);
+  const { classId } = req.query;
+  if (!classId) return res.status(400).json({ error: "classId is required" });
+  const cls = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!cls) return res.status(404).json({ error: "Class not found" });
+
+  const students = await prisma.student.findMany({
+    where: { classId },
+    orderBy: { roll: "asc" },
+    include: { room: { include: { hostelFloor: { include: { hostel: true } } } } },
+  });
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Students");
-  sheet.addRow(TEMPLATE_HEADERS).font = { bold: true };
-  for (const s of students) {
-    const cls = classes.find((c) => c.id === s.classId);
-    const room = hostelRooms.find((r) => r.id === s.roomId);
-    const floor = room && hostelFloors.find((f) => f.id === room.hostelFloorId);
-    const hostel = floor && hostels.find((h) => h.id === floor.hostelId);
-    sheet.addRow([s.name, s.roll, cls?.name || "", s.isLocal ? "Local" : "Hostel", hostel?.name || "", floor?.name || "", room?.roomNo || ""]);
-  }
-  sheet.columns.forEach((col) => { col.width = 20; });
+  writeClassMarker(sheet, cls);
+  writeHeaderRow(sheet);
+  students.forEach((s, i) => {
+    const hostelName = s.room?.hostelFloor?.hostel?.name;
+    sheet.getRow(FIRST_DATA_ROW + i).values = { 1: s.roll, 2: s.name, 3: hostelName || DAY_SCHOLAR, 4: s.room?.roomNo || "" };
+  });
 
-  await sendWorkbook(res, workbook, "students-export.xlsx");
+  await sendWorkbook(res, workbook, `vigil_students_${sanitizeFilenamePart(cls.name)}_export.xlsx`);
 });
 
 // Everyone absent on a given date — same roll/name/class shape as the
@@ -111,19 +212,62 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
   await sendWorkbook(res, workbook, `absentees-${date}.xlsx`);
 });
 
-// Reads an uploaded spreadsheet, resolves each row's class/hostel/floor/room
-// names against what's actually in the database, and — if anything resolved
-// — creates one PendingChange for an AO to approve. Rows with a bad or
-// missing name/roll/class are skipped with an error message; rows with a
-// bad room reference are still added, just without a room, with a warning.
+// The actual per-row rules (section 3 of the spec): required fields, roll
+// uniqueness (within the sheet, and against that class's existing
+// students), the hostel-or-day-scholar choice, and the room/hostel
+// cross-check. Pure — no exceljs or Prisma calls — so it's testable against
+// a plain fixture. `rows` is already-extracted {rowNumber, roll, name,
+// hostelOrDay, roomNo} per row; blank rows should already be filtered out
+// by the caller (a blank row isn't an error, just nothing to validate).
+export function validateImportRows(rows, { classId, className, hostels, hostelFloors, hostelRooms, existingRolls }) {
+  const seenRollsInSheet = new Set();
+  const toAdd = [];
+  const errors = [];
+
+  for (const { rowNumber, roll, name, hostelOrDay, roomNo } of rows) {
+    if (!roll && !name && !hostelOrDay && !roomNo) continue; // fully blank row, ignore silently
+    if (norm(roll) === "example") continue; // the untouched example row, ignore silently
+
+    const rowLabel = `Row ${rowNumber}`;
+    if (!roll || !name) { errors.push(`${rowLabel}: roll no. and name are both required`); continue; }
+
+    const rollKey = norm(roll);
+    if (seenRollsInSheet.has(rollKey)) { errors.push(`${rowLabel}: roll no. "${roll}" is duplicated within this sheet`); continue; }
+    if (existingRolls.has(rollKey)) { errors.push(`${rowLabel}: roll no. "${roll}" already exists in ${className}`); continue; }
+
+    if (!hostelOrDay) { errors.push(`${rowLabel}: choose "Day scholar" or a hostel in column C`); continue; }
+
+    let roomId = null;
+    let isLocal;
+    if (norm(hostelOrDay) === norm(DAY_SCHOLAR)) {
+      isLocal = true;
+      if (roomNo) { errors.push(`${rowLabel}: room must be left empty for a day scholar`); continue; }
+    } else {
+      const hostel = hostels.find((h) => norm(h.name) === norm(hostelOrDay));
+      if (!hostel) { errors.push(`${rowLabel}: "${hostelOrDay}" isn't "Day scholar" or an approved hostel name`); continue; }
+      isLocal = false;
+      if (!roomNo) { errors.push(`${rowLabel}: room is required for a hostel student`); continue; }
+      const floorsOfHostel = hostelFloors.filter((f) => f.hostelId === hostel.id);
+      const room = hostelRooms.find((r) => floorsOfHostel.some((f) => f.id === r.hostelFloorId) && norm(r.roomNo) === norm(roomNo));
+      if (!room) { errors.push(`${rowLabel}: room "${roomNo}" not found in ${hostel.name}`); continue; }
+      roomId = room.id;
+    }
+
+    seenRollsInSheet.add(rollKey);
+    toAdd.push({ name, roll, classId, roomId, isLocal });
+  }
+
+  return { toAdd, errors };
+}
+
+// Reads an uploaded per-class sheet (see writeClassMarker/readClassIdFromSheet
+// above — the class is baked into a hidden cell, never a column, and never
+// inferred from the filename), validates every row, and — only if every row
+// is clean — creates one PendingChange for an AO to approve. Any row with a
+// problem rejects the whole file; nothing is partially imported, same
+// all-or-nothing philosophy as the structure batch (see structureBatch.js).
 excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"), upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-  const [classes, hostels, hostelFloors, hostelRooms, existingStudents] = await Promise.all([
-    prisma.classroom.findMany(), prisma.hostel.findMany(), prisma.hostelFloor.findMany(), prisma.hostelRoom.findMany(), prisma.student.findMany(),
-  ]);
-  const norm = (s) => String(s || "").trim().toLowerCase();
-  const existingRolls = new Set(existingStudents.map((s) => norm(s.roll)));
 
   const workbook = new ExcelJS.Workbook();
   try {
@@ -131,53 +275,61 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
   } catch {
     return res.status(400).json({ error: "Couldn't read that file — make sure it's a .xlsx file" });
   }
-  const sheet = workbook.worksheets[0];
+  const sheet = workbook.getWorksheet("Students") || workbook.worksheets[0];
   if (!sheet) return res.status(400).json({ error: "The file has no sheets" });
 
-  const toAdd = [];
-  const errors = [];
-  const warnings = [];
-
-  sheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return; // header row
-    const [_, name, roll, className, localOrHostel, hostelName, hostelFloorName, roomNo] = row.values;
-    if (!name && !roll) return; // blank row, ignore silently
-
-    const rowLabel = `Row ${rowNumber}`;
-    if (!name || !roll) return errors.push(`${rowLabel}: missing name or roll number`);
-    if (!className) return errors.push(`${rowLabel}: missing class / batch`);
-    if (existingRolls.has(norm(roll))) return warnings.push(`${rowLabel}: skipped — roll number "${roll}" already exists`);
-
-    const cls = classes.find((c) => norm(c.name) === norm(className));
-    if (!cls) return errors.push(`${rowLabel}: class "${className}" not found — check the Reference sheet for exact names`);
-
-    let roomId = null;
-    const wantsRoom = norm(localOrHostel) === "hostel" || (hostelName && hostelFloorName && roomNo);
-    if (wantsRoom) {
-      const hostel = hostels.find((h) => norm(h.name) === norm(hostelName));
-      const floor = hostel && hostelFloors.find((f) => f.hostelId === hostel.id && norm(f.name) === norm(hostelFloorName));
-      const room = floor && hostelRooms.find((r) => r.hostelFloorId === floor.id && norm(r.roomNo) === norm(roomNo));
-      if (room) roomId = room.id;
-      else warnings.push(`${rowLabel}: room "${hostelName} / ${hostelFloorName} / ${roomNo}" not found — added with no room assigned`);
-    }
-
-    const isLocal = norm(localOrHostel) === "local" ? true : norm(localOrHostel) === "hostel" ? false : !roomId;
-    toAdd.push({ name: String(name).trim(), roll: String(roll).trim(), classId: cls.id, roomId, isLocal });
-    existingRolls.add(norm(roll)); // guard against duplicate rolls within the same sheet
-  });
-
-  let change = null;
-  if (toAdd.length > 0) {
-    change = await prisma.pendingChange.create({
-      data: {
-        type: "bulk_add_students",
-        summary: `Bulk import ${toAdd.length} student(s) from Excel`,
-        payload: { students: toAdd },
-        requestedById: req.user.id,
-        status: "pending",
-      },
+  const classId = readClassIdFromSheet(sheet);
+  const cls = classId ? await prisma.classroom.findUnique({ where: { id: classId } }) : null;
+  if (!cls) {
+    return res.status(400).json({
+      error: "This file doesn't have a valid class attached — it may be an old or unrelated file. Download a fresh template for the class you want to import and use that.",
     });
   }
 
-  res.json({ change, addedCount: toAdd.length, warnings, errors });
+  const [hostels, hostelFloors, hostelRooms, existingStudentsInClass] = await Promise.all([
+    prisma.hostel.findMany(),
+    prisma.hostelFloor.findMany(),
+    prisma.hostelRoom.findMany(),
+    prisma.student.findMany({ where: { classId } }),
+  ]);
+
+  // sheet.eachRow -> a plain array of {rowNumber, roll, name, hostelOrDay,
+  // roomNo}, so the actual validation (the risky part) is a pure function
+  // that can be exercised with a plain fixture, with no exceljs/DB involved.
+  const rawRows = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber < FIRST_DATA_ROW) return; // title + header rows
+    const values = row.values;
+    rawRows.push({
+      rowNumber,
+      roll: String(values[1] ?? "").trim(),
+      name: String(values[2] ?? "").trim(),
+      hostelOrDay: String(values[3] ?? "").trim(),
+      roomNo: String(values[4] ?? "").trim(),
+    });
+  });
+
+  const existingRolls = new Set(existingStudentsInClass.map((s) => norm(s.roll)));
+  const { toAdd, errors } = validateImportRows(rawRows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRolls });
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: `${errors.length} row(s) had problems — nothing was imported.`, errors });
+  }
+  if (toAdd.length === 0) {
+    return res.status(400).json({ error: "No student rows found in the sheet." });
+  }
+
+  const hostellerCount = toAdd.filter((s) => !s.isLocal).length;
+  const dayScholarCount = toAdd.length - hostellerCount;
+  const change = await prisma.pendingChange.create({
+    data: {
+      type: "bulk_add_students",
+      summary: `Add ${toAdd.length} students to ${cls.name} (${hostellerCount} hosteller${hostellerCount === 1 ? "" : "s"}, ${dayScholarCount} day scholar${dayScholarCount === 1 ? "" : "s"})`,
+      payload: { students: toAdd },
+      requestedById: req.user.id,
+      status: "pending",
+    },
+  });
+
+  res.json({ change, addedCount: toAdd.length });
 });
