@@ -14,6 +14,24 @@
 // the class implicit (baked into the file, not a column) and turning
 // "hostel or day scholar" into an in-cell dropdown makes most of that class
 // of typo simply impossible to enter in the first place.
+//
+// A HARD-WON LESSON baked into this file: exceljs has a couple of API
+// corners that silently do nothing instead of erroring, and the previous
+// version of this file tripped both:
+//   1. `sheet.columns = [...]` REPLACES the entire column collection. Any
+//      per-column property (like `hidden`) set before that reassignment —
+//      even on a different column — gets silently wiped. Every column
+//      property for a sheet is therefore set in exactly ONE `.columns =`
+//      assignment, and nothing later ever reassigns `.columns` again.
+//   2. `row.values = { 1: "x", 2: "y" }` (object form) writes NOTHING —
+//      the row comes back empty, with no error. Only the array form
+//      (`row.values = ["x", "y"]`, index 0 = column A) or explicit
+//      `row.getCell(n).value = ...` actually work. This file only uses
+//      the latter, cell-by-cell, to stay unambiguous.
+// Both were caught by unzipping a real generated .xlsx and inspecting the
+// raw sheet/workbook XML — the exceljs-object-level round-trip a Node test
+// does is not proof the bytes on disk are right; see verifyTemplateXml() in
+// the (non-committed) test script this fix was verified with.
 // ============================================================================
 import { Router } from "express";
 import multer from "multer";
@@ -31,6 +49,17 @@ const HEADER_ROW = 2;
 const FIRST_DATA_ROW = 3;
 const LAST_VALIDATED_ROW = FIRST_DATA_ROW + 497; // "generous" range per spec — ~500 rows total
 
+const REFERENCE_SHEET = "Reference";
+// The class id lives ONLY here: a hidden column on the protected Reference
+// sheet, never on the Students sheet at all (that's the whole fix for "the
+// class id is visible on the Students sheet"), plus a workbook-level
+// defined name pointing at it so the upload endpoint can find it even if
+// this cell ever moves. White font is a third, redundant layer in case a
+// resave ever strips the hidden-column flag — see readClassIdFromWorkbook.
+const CLASS_ID_CELL = "H1";
+const CLASS_ID_RANGE = `'${REFERENCE_SHEET}'!$H$1`;
+const CLASS_ID_DEFINED_NAME = "VigilClassId";
+
 function sendWorkbook(res, workbook, filename) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -41,29 +70,53 @@ function sanitizeFilenamePart(s) {
 }
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
-// Writes the "Class: <name>" title (merged, frozen) and the hidden class-id
-// cell every downstream reader looks for — see readClassIdFromSheet(). Kept
-// out of the visible A:D columns entirely so it survives column reordering
-// or someone widening/narrowing the data area.
-function writeClassMarker(sheet, cls) {
-  sheet.getCell(`A${TITLE_ROW}`).value = `Class: ${cls.name}`;
-  sheet.getCell(`A${TITLE_ROW}`).font = { bold: true, size: 13 };
-  sheet.mergeCells(`A${TITLE_ROW}:D${TITLE_ROW}`);
-  sheet.getRow(TITLE_ROW).height = 22;
-  sheet.getCell(`F${TITLE_ROW}`).value = cls.id;
-  sheet.getColumn(6).hidden = true;
-  sheet.views = [{ state: "frozen", ySplit: HEADER_ROW }];
-}
-function readClassIdFromSheet(sheet) {
-  const v = sheet.getCell(`F${TITLE_ROW}`).value;
-  return v ? String(v).trim() : "";
+function fillCell(cell, argb) {
+  cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
 }
 
-function writeHeaderRow(sheet) {
-  const row = sheet.getRow(HEADER_ROW);
-  HEADERS.forEach((h, i) => { row.getCell(i + 1).value = h; });
-  row.font = { bold: true };
+// Column widths + the title row + the bold/filled header row + the cell
+// note explaining columns C/D + frozen panes. Shared by the template and
+// the export, since both are "Students" sheets with the same four columns
+// — the template additionally gets an example row and a dropdown (see
+// buildStudentTemplateWorkbook), neither of which the export needs.
+function writeStudentsSheetHeader(sheet, cls) {
   sheet.columns = [{ width: 14 }, { width: 24 }, { width: 26 }, { width: 12 }];
+
+  const titleCell = sheet.getCell(`A${TITLE_ROW}`);
+  titleCell.value = `Class: ${cls.name}`;
+  titleCell.font = { bold: true, size: 13 };
+  fillCell(titleCell, "FFBDD7EE");
+  sheet.mergeCells(`A${TITLE_ROW}:D${TITLE_ROW}`);
+  sheet.getRow(TITLE_ROW).height = 22;
+
+  const headerRow = sheet.getRow(HEADER_ROW);
+  HEADERS.forEach((h, i) => { headerRow.getCell(i + 1).value = h; });
+  headerRow.eachCell((cell) => { cell.font = { bold: true }; fillCell(cell, "FFE7ECF3"); });
+  sheet.getCell(`C${HEADER_ROW}`).note =
+    'Column C: choose "Day scholar" or a hostel from the dropdown.\nColumn D: room number, only for hostellers — see the Reference sheet for valid values.';
+
+  sheet.views = [{ state: "frozen", ySplit: HEADER_ROW }];
+}
+
+// A real example row, styled and roll-flagged so the upload endpoint can
+// reliably skip it if it's still there — see the "example" check in
+// validateImportRows below. Written cell-by-cell (never `row.values = {...}`
+// object form — see the file-level comment on why).
+function addExampleRow(sheet, hostels, hostelFloors, hostelRooms) {
+  let exampleHostelOrDay = DAY_SCHOLAR;
+  let exampleRoom = "";
+  if (hostels.length > 0) {
+    const firstHostel = hostels[0];
+    const floorsOfHostel = hostelFloors.filter((f) => f.hostelId === firstHostel.id);
+    const room = hostelRooms.find((r) => floorsOfHostel.some((f) => f.id === r.hostelFloorId));
+    if (room) { exampleHostelOrDay = firstHostel.name; exampleRoom = room.roomNo; }
+  }
+  const row = sheet.getRow(FIRST_DATA_ROW);
+  ["EXAMPLE", "Example Student — delete this row", exampleHostelOrDay, exampleRoom].forEach((v, i) => { row.getCell(i + 1).value = v; });
+  row.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { italic: true, color: { argb: "FF888888" } };
+    fillCell(cell, "FFF2F2F2");
+  });
 }
 
 // Column C's in-cell dropdown: "Day scholar" first, then every approved
@@ -85,12 +138,22 @@ function applyHostelDropdown(sheet, listRangeRef) {
   }
 }
 
-// The read-only lookup sheet: a human-readable Hostel/Floor/Room table, plus
-// a hidden column holding the exact dropdown source list for column C.
-async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms) {
-  const ref = workbook.addWorksheet("Reference");
+// The read-only lookup sheet: a human-readable Hostel/Floor/Room table for
+// people to check column D values against, plus (in hidden columns, never
+// part of that visible table) the exact dropdown source list for column C
+// and the class id itself. Protected so it reads as clearly not-for-editing.
+async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms, cls) {
+  const ref = workbook.addWorksheet(REFERENCE_SHEET);
+
+  // ONE column assignment for the whole sheet: widths for the visible
+  // Hostel/Floor/Room table (A-C), a spacer (E), the hidden dropdown-source
+  // column (F), another spacer (G), and the hidden class-id column (H).
+  // See the file-level comment for why this can't be split into multiple
+  // `.columns =` assignments or later per-column mutations.
+  ref.columns = [{ width: 22 }, { width: 22 }, { width: 22 }, {}, {}, { width: 34, hidden: true }, {}, { width: 20, hidden: true }];
+
   ref.getRow(1).values = ["Hostel", "Floor", "Room"];
-  ref.getRow(1).font = { bold: true };
+  ref.getRow(1).eachCell((cell) => { cell.font = { bold: true }; fillCell(cell, "FFE7ECF3"); });
   for (const h of hostels) {
     for (const f of hostelFloors.filter((x) => x.hostelId === h.id)) {
       for (const room of hostelRooms.filter((x) => x.hostelFloorId === f.id)) {
@@ -98,35 +161,68 @@ async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms) {
       }
     }
   }
-  ref.columns.forEach((col) => { col.width = 22; });
 
   const dropdownOptions = [DAY_SCHOLAR, ...hostels.map((h) => h.name)];
   ref.getCell("F1").value = "Valid entries for Students!C (internal — do not edit)";
   dropdownOptions.forEach((opt, i) => { ref.getCell(`F${i + 2}`).value = opt; });
-  ref.getColumn(6).hidden = true;
+
+  const classIdCell = ref.getCell(CLASS_ID_CELL);
+  classIdCell.value = cls.id;
+  classIdCell.font = { color: { argb: "FFFFFFFF" } }; // white-on-white: a redundant layer even if the hidden-column flag is ever stripped by a resave
+  workbook.definedNames.add(CLASS_ID_RANGE, CLASS_ID_DEFINED_NAME);
 
   await ref.protect("", { selectLockedCells: true, selectUnlockedCells: true });
-  return `'Reference'!$F$2:$F$${dropdownOptions.length + 1}`;
+  return `'${REFERENCE_SHEET}'!$F$2:$F$${dropdownOptions.length + 1}`;
 }
 
-// A real example row, styled and roll-flagged so the upload endpoint can
-// reliably skip it if it's still there — see the "example" check in the
-// import route below.
-function addExampleRow(sheet, hostels, hostelFloors, hostelRooms) {
-  let exampleHostelOrDay = DAY_SCHOLAR;
-  let exampleRoom = "";
-  if (hostels.length > 0) {
-    const firstHostel = hostels[0];
-    const floorsOfHostel = hostelFloors.filter((f) => f.hostelId === firstHostel.id);
-    const room = hostelRooms.find((r) => floorsOfHostel.some((f) => f.id === r.hostelFloorId));
-    if (room) { exampleHostelOrDay = firstHostel.name; exampleRoom = room.roomNo; }
+// Reads the class id back out of an uploaded workbook. Primary: the
+// workbook-level defined name (Formulas > Name Manager in Excel — genuinely
+// invisible while browsing sheets, unlike a column someone could unhide).
+// Falls back to reading the fixed Reference!H1 cell directly, in case the
+// defined name itself didn't survive a resave in some other tool.
+export function readClassIdFromWorkbook(workbook) {
+  try {
+    const ranges = workbook.definedNames.getRanges(CLASS_ID_DEFINED_NAME)?.ranges || [];
+    for (const range of ranges) {
+      const m = range.match(/^(?:'([^']+)'|([^!]+))!\$?([A-Z]+)\$?(\d+)$/);
+      if (!m) continue;
+      const sheet = workbook.getWorksheet(m[1] || m[2]);
+      const v = sheet?.getCell(`${m[3]}${m[4]}`).value;
+      if (v) return String(v).trim();
+    }
+  } catch {
+    // fall through to the direct-cell fallback below
   }
-  const row = sheet.getRow(FIRST_DATA_ROW);
-  row.values = { 1: "EXAMPLE", 2: "Example Student — delete this row", 3: exampleHostelOrDay, 4: exampleRoom };
-  row.eachCell({ includeEmpty: true }, (cell) => {
-    cell.font = { italic: true, color: { argb: "FF888888" } };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
+  const ref = workbook.getWorksheet(REFERENCE_SHEET);
+  const v = ref?.getCell(CLASS_ID_CELL).value;
+  return v ? String(v).trim() : "";
+}
+
+// Exported so it can be exercised directly with fixture data — both by the
+// route below and by a standalone script that unzips the real output and
+// inspects the raw XML (see the file-level comment on why that matters).
+export async function buildStudentTemplateWorkbook({ cls, hostels, hostelFloors, hostelRooms }) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Students");
+  writeStudentsSheetHeader(sheet, cls);
+  addExampleRow(sheet, hostels, hostelFloors, hostelRooms);
+
+  const listRangeRef = await addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms, cls);
+  applyHostelDropdown(sheet, listRangeRef);
+
+  return workbook;
+}
+
+export function buildStudentExportWorkbook({ cls, students }) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Students");
+  writeStudentsSheetHeader(sheet, cls);
+  students.forEach((s, i) => {
+    const hostelName = s.room?.hostelFloor?.hostel?.name;
+    const row = sheet.getRow(FIRST_DATA_ROW + i);
+    [s.roll, s.name, hostelName || DAY_SCHOLAR, s.room?.roomNo || ""].forEach((v, j) => { row.getCell(j + 1).value = v; });
   });
+  return workbook;
 }
 
 excelRouter.get("/excel/students/template", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
@@ -141,15 +237,7 @@ excelRouter.get("/excel/students/template", requireAuth, requireRole("DB_MANAGER
     prisma.hostelRoom.findMany({ orderBy: { roomNo: "asc" } }),
   ]);
 
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet("Students");
-  writeClassMarker(sheet, cls);
-  writeHeaderRow(sheet);
-  addExampleRow(sheet, hostels, hostelFloors, hostelRooms);
-
-  const listRangeRef = await addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms);
-  applyHostelDropdown(sheet, listRangeRef);
-
+  const workbook = await buildStudentTemplateWorkbook({ cls, hostels, hostelFloors, hostelRooms });
   await sendWorkbook(res, workbook, `vigil_students_${sanitizeFilenamePart(cls.name)}.xlsx`);
 });
 
@@ -165,15 +253,7 @@ excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER")
     include: { room: { include: { hostelFloor: { include: { hostel: true } } } } },
   });
 
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet("Students");
-  writeClassMarker(sheet, cls);
-  writeHeaderRow(sheet);
-  students.forEach((s, i) => {
-    const hostelName = s.room?.hostelFloor?.hostel?.name;
-    sheet.getRow(FIRST_DATA_ROW + i).values = { 1: s.roll, 2: s.name, 3: hostelName || DAY_SCHOLAR, 4: s.room?.roomNo || "" };
-  });
-
+  const workbook = buildStudentExportWorkbook({ cls, students });
   await sendWorkbook(res, workbook, `vigil_students_${sanitizeFilenamePart(cls.name)}_export.xlsx`);
 });
 
@@ -260,10 +340,11 @@ export function validateImportRows(rows, { classId, className, hostels, hostelFl
   return { toAdd, errors };
 }
 
-// Reads an uploaded per-class sheet (see writeClassMarker/readClassIdFromSheet
-// above — the class is baked into a hidden cell, never a column, and never
-// inferred from the filename), validates every row, and — only if every row
-// is clean — creates one PendingChange for an AO to approve. Any row with a
+// Reads an uploaded per-class sheet (see addReferenceSheet/
+// readClassIdFromWorkbook above — the class is baked into a hidden cell on
+// the Reference sheet, never a Students-sheet column, and never inferred
+// from the filename), validates every row, and — only if every row is
+// clean — creates one PendingChange for an AO to approve. Any row with a
 // problem rejects the whole file; nothing is partially imported, same
 // all-or-nothing philosophy as the structure batch (see structureBatch.js).
 excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"), upload.single("file"), async (req, res) => {
@@ -278,7 +359,7 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
   const sheet = workbook.getWorksheet("Students") || workbook.worksheets[0];
   if (!sheet) return res.status(400).json({ error: "The file has no sheets" });
 
-  const classId = readClassIdFromSheet(sheet);
+  const classId = readClassIdFromWorkbook(workbook);
   const cls = classId ? await prisma.classroom.findUnique({ where: { id: classId } }) : null;
   if (!cls) {
     return res.status(400).json({
