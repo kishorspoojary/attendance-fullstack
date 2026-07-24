@@ -859,7 +859,7 @@ export default function App() {
               {activeTab === "assign" && <AssignAdmin state={state} runAction={runAction} />}
               {activeTab === "createstaff" && <CreateStaffAdmin state={state} runAction={runAction} />}
               {activeTab === "absentees" && <AbsenteesView state={state} />}
-              {activeTab === "mychanges" && <MyChanges state={state} me={me} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
+              {activeTab === "mychanges" && <MyChanges state={state} me={me} runAction={runAction} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Incharge Teacher" note="Lists appear once the Discipline Officer has verified them. Any Incharge Teacher on the floor can file this." />}
@@ -1160,6 +1160,57 @@ function StructureBatchTree({ payload }) {
   );
 }
 
+// A compact "Hostel / Room 001" label for one payload student's room —
+// deliberately shorter than roomLabel() (which also includes the floor
+// name), since this is used inline next to a roll+name on an approval card,
+// not as a standalone lookup line.
+function studentHostelRoomLabel(state, roomId) {
+  const room = state.hostelRooms.find((r) => r.id === roomId);
+  if (!room) return null;
+  const floor = state.hostelFloors.find((f) => f.id === room.hostelFloorId);
+  const hostel = floor && state.hostels.find((h) => h.id === floor.hostelId);
+  return `${hostel?.name || "?"} / Room ${room.roomNo}`;
+}
+// One line of {roll, name, classId, roomId, isLocal} — the shape both
+// add_student's payload and each entry of bulk_add_students' payload.students
+// already have. `showClass` is only turned on for add_student (a single
+// card with no other line naming the class); bulk_add_students already
+// states its class in the change's own summary line, so repeating it per
+// row there would be noise.
+function StudentAddDetail({ state, s, showClass }) {
+  const cls = showClass ? state.classes.find((c) => c.id === s.classId) : null;
+  const hostelRoom = !s.isLocal ? studentHostelRoomLabel(state, s.roomId) : null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <span className="font-display text-slate-500">{s.roll}</span>
+      <span className="font-medium text-slate-800">{s.name}</span>
+      {cls && <span className="text-slate-500">{cls.name}</span>}
+      {s.isLocal ? <Badge tone="amber">Day scholar</Badge> : <span className="text-slate-500">{hostelRoom || "Room not set"}</span>}
+    </div>
+  );
+}
+
+// PendingChange has no separate "decided at" timestamp — schema.prisma only
+// has createdAt — so "last 2 days" uses createdAt as the age reference for
+// approved/rejected rows. sent_back rows are exempt entirely: the ball is
+// back in the Database Manager's court, so (like pending) they always show
+// regardless of age. Shared by AOApprovals' "Recent decisions" and
+// MyChanges' "My requests", so both pages age off old decisions the same way.
+const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+function isAlwaysVisibleDecision(c) {
+  if (c.status !== "approved" && c.status !== "rejected") return true; // pending, sent_back
+  return Date.now() - new Date(c.createdAt).getTime() <= TWO_DAYS_MS;
+}
+// A small "Show N older decisions" toggle shared by both lists below.
+function ShowOlderToggle({ olderCount, shown, onShow }) {
+  if (shown || olderCount === 0) return null;
+  return (
+    <button onClick={onShow} className="mt-2 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-700">
+      Show {pluralize(olderCount, "older decision")}
+    </button>
+  );
+}
+
 function AOApprovals({ state, runAction }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
   // Only ever set for an approved create_staff change — that's the only
@@ -1168,6 +1219,7 @@ function AOApprovals({ state, runAction }) {
   // one moment the password itself exists in plaintext, so it's shown once
   // here to whichever AO clicked approve, then gone.
   const [newStaffPassword, setNewStaffPassword] = useState(null); // { name, password }
+  const [showOlderDecisions, setShowOlderDecisions] = useState(false);
 
   const approve = async (c) => {
     const result = await runAction(() => api.approveChange(c.id), "Approved");
@@ -1175,8 +1227,12 @@ function AOApprovals({ state, runAction }) {
   };
   const reject = (c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected");
   const sendBackBatch = (c, reason) => runAction(() => api.sendBackStructureBatch(c.id, reason), "Sent back for edits");
+  const sendBackStudentChange = (c, reason) => runAction(() => api.sendBackChange(c.id, reason), "Sent back for edits");
 
   const decisionTone = (status) => (status === "approved" ? "emerald" : status === "sent_back" ? "amber" : "rose");
+
+  const decided = state.pendingChanges.filter((c) => c.status !== "pending");
+  const visibleDecided = showOlderDecisions ? decided : decided.filter(isAlwaysVisibleDecision);
 
   return (
     <div>
@@ -1216,6 +1272,41 @@ function AOApprovals({ state, runAction }) {
               </Card>
             );
           }
+          if (c.type === "bulk_add_students") {
+            return (
+              <Card key={c.id} className="p-4">
+                <Collapsible header={<span className="font-medium text-slate-800">{c.summary}</span>}>
+                  <div className="space-y-1.5 border-l-2 border-slate-100 pl-3">
+                    {c.payload.students.map((s, i) => <StudentAddDetail key={i} state={state} s={s} />)}
+                  </div>
+                </Collapsible>
+                <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <SendBackButton onSend={(reason) => sendBackStudentChange(c, reason)} />
+                  <div className="flex gap-2">
+                    <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
+                  </div>
+                </div>
+              </Card>
+            );
+          }
+          if (c.type === "add_student") {
+            return (
+              <Card key={c.id} className="p-4">
+                <div className="font-medium text-slate-800">{c.summary}</div>
+                <div className="mt-1"><StudentAddDetail state={state} s={c.payload} showClass /></div>
+                <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <SendBackButton onSend={(reason) => sendBackStudentChange(c, reason)} />
+                  <div className="flex gap-2">
+                    <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
+                  </div>
+                </div>
+              </Card>
+            );
+          }
           return (
             <Card key={c.id} className="p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1239,13 +1330,15 @@ function AOApprovals({ state, runAction }) {
       <div className="mt-8">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent decisions</p>
         <div className="space-y-2">
-          {state.pendingChanges.filter((c) => c.status !== "pending").slice(0, 6).map((c) => (
+          {visibleDecided.map((c) => (
             <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
               <span className="text-slate-600">{c.type === "structure_batch" ? `Structure batch — ${c.summary}` : c.summary}</span>
               <Badge tone={decisionTone(c.status)}>{c.status.replace("_", " ")}</Badge>
             </div>
           ))}
+          {visibleDecided.length === 0 && <p className="text-sm text-slate-400">Nothing yet.</p>}
         </div>
+        <ShowOlderToggle olderCount={decided.length - visibleDecided.length} shown={showOlderDecisions} onShow={() => setShowOlderDecisions(true)} />
       </div>
     </div>
   );
@@ -2487,31 +2580,138 @@ function AbsenteesView({ state }) {
 function myChangeTone(status) {
   return status === "approved" ? "emerald" : status === "rejected" ? "rose" : status === "sent_back" ? "amber" : "amber";
 }
-function MyChanges({ state, me, onEditBatch }) {
+
+// {roll, name, classId, roomId, isLocal} (add_student's payload, or one
+// entry of bulk_add_students' payload.students) -> a row this modal's table
+// can edit, using the same hostelId-or-DAY_SCHOLAR_VALUE convention as
+// HostelOrDayFields above so the "which room options apply" logic
+// (roomsForHostel) is shared rather than reimplemented.
+function studentPayloadRowToEditable(state, s) {
+  return {
+    _id: uid(),
+    roll: s.roll,
+    name: s.name,
+    hostelChoice: s.isLocal ? DAY_SCHOLAR_VALUE : (hostelIdForRoom(state, s.roomId) || DAY_SCHOLAR_VALUE),
+    roomId: s.isLocal ? "" : (s.roomId || ""),
+  };
+}
+// Lets the Database Manager fix a sent-back add_student/bulk_add_students
+// change in place — no need to re-upload Excel over one bad row. Submits
+// the same {roll, name, hostelOrDay, roomNo} row shape the Excel importer
+// uses; the server re-runs the identical validateImportRows rules (see
+// routes/changes.js's PUT /changes/:id), so a fix here can never be looser
+// than what a fresh upload would accept.
+function EditStudentChangeModal({ state, change, onClose, runAction }) {
+  const isBulk = change.type === "bulk_add_students";
+  const [rows, setRows] = useState(() =>
+    isBulk ? change.payload.students.map((s) => studentPayloadRowToEditable(state, s)) : [studentPayloadRowToEditable(state, change.payload)]
+  );
+  const [errors, setErrors] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const classId = isBulk ? change.payload.students[0]?.classId : change.payload.classId;
+  const className = state.classes.find((c) => c.id === classId)?.name || "?";
+
+  const updateRow = (id, patch) => setRows((rs) => rs.map((r) => (r._id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id) => setRows((rs) => rs.filter((r) => r._id !== id));
+
+  const submit = async () => {
+    setErrors([]);
+    setBusy(true);
+    const rowsPayload = rows.map((r) => ({
+      roll: r.roll,
+      name: r.name,
+      hostelOrDay: r.hostelChoice === DAY_SCHOLAR_VALUE ? "Day scholar" : (state.hostels.find((h) => h.id === r.hostelChoice)?.name || ""),
+      roomNo: r.hostelChoice === DAY_SCHOLAR_VALUE ? "" : (state.hostelRooms.find((rm) => rm.id === r.roomId)?.roomNo || ""),
+    }));
+    try {
+      const result = await api.editChange(change.id, rowsPayload);
+      await runAction(() => Promise.resolve(result), "Resent for AO approval");
+      onClose();
+    } catch (e) {
+      setErrors(e.errors?.length > 0 ? e.errors : [e.message]);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title={isBulk ? `Edit student batch — ${className}` : "Edit student"} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">Class: <span className="font-medium text-slate-700">{className}</span> (fixed — this edits the rows, not which class they belong to)</p>
+        {errors.length > 0 && (
+          <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
+            {errors.map((e, i) => <p key={i}>{e}</p>)}
+          </div>
+        )}
+        <div className="max-h-[50vh] space-y-2 overflow-y-auto">
+          {rows.map((r) => (
+            <div key={r._id} className="grid grid-cols-2 gap-2 rounded-lg border border-slate-100 p-2.5 sm:grid-cols-[1fr_1.3fr_1.3fr_1fr_auto]">
+              <Field label="Roll"><input className={inputCls} value={r.roll} onChange={(e) => updateRow(r._id, { roll: e.target.value })} /></Field>
+              <Field label="Name"><input className={inputCls} value={r.name} onChange={(e) => updateRow(r._id, { name: e.target.value })} /></Field>
+              <Field label="Day scholar / hostel">
+                <select className={inputCls} value={r.hostelChoice} onChange={(e) => updateRow(r._id, { hostelChoice: e.target.value, roomId: "" })}>
+                  <option value={DAY_SCHOLAR_VALUE}>Day scholar</option>
+                  {state.hostels.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+                </select>
+              </Field>
+              {r.hostelChoice !== DAY_SCHOLAR_VALUE ? (
+                <Field label="Room"><Select value={r.roomId} onChange={(v) => updateRow(r._id, { roomId: v })} options={roomsForHostel(state, r.hostelChoice).map((rm) => ({ value: rm.id, label: rm.roomNo }))} /></Field>
+              ) : <div />}
+              {isBulk && (
+                <button onClick={() => removeRow(r._id)} className="self-end justify-self-end rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 sm:mb-1.5" aria-label="Remove row"><Trash2 size={14} /></button>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={submit} disabled={busy || rows.length === 0}>{busy ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />} Resend for AO approval</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function MyChanges({ state, me, runAction, onEditBatch }) {
   const mine = state.pendingChanges.filter((c) => c.requestedById === me.id);
+  const [showOlderMine, setShowOlderMine] = useState(false);
+  const [editingChange, setEditingChange] = useState(null);
+  const visibleMine = showOlderMine ? mine : mine.filter(isAlwaysVisibleDecision);
+
   return (
     <div>
       <SectionTitle icon={Clock} title="My requests" subtitle="Everything you've sent to the AO." />
       {mine.length === 0 && <EmptyNote text="You haven't submitted anything yet." />}
       <div className="space-y-2">
-        {mine.map((c) => {
+        {visibleMine.map((c) => {
           const isBatch = c.type === "structure_batch";
+          const isStudentChange = c.type === "add_student" || c.type === "bulk_add_students";
+          const sentBack = c.status === "sent_back";
           return (
-            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${isBatch && c.status === "sent_back" ? "border-amber-200" : ""}`}>
+            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${(isBatch || isStudentChange) && sentBack ? "border-amber-200" : ""}`}>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-slate-700">{isBatch ? `Structure batch — ${c.summary}` : c.summary}</span>
                 <Badge tone={myChangeTone(c.status)}>{c.status.replace("_", " ")}</Badge>
               </div>
-              {isBatch && c.status === "sent_back" && (
+              {isBatch && sentBack && (
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2">
                   <p className="text-xs text-amber-800"><span className="font-medium">AO's reason:</span> {c.reason}</p>
                   <Btn size="sm" variant="outline" onClick={() => onEditBatch(c)}><Pencil size={12} /> Edit and resubmit</Btn>
                 </div>
               )}
+              {isStudentChange && sentBack && (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2">
+                  <p className="text-xs text-amber-800"><span className="font-medium">AO's reason:</span> {c.reason}</p>
+                  <Btn size="sm" variant="outline" onClick={() => setEditingChange(c)}><Pencil size={12} /> Edit and resubmit</Btn>
+                </div>
+              )}
             </div>
           );
         })}
+        {visibleMine.length === 0 && mine.length > 0 && <p className="text-sm text-slate-400">Nothing recent — everything's older than 2 days.</p>}
       </div>
+      <ShowOlderToggle olderCount={mine.length - visibleMine.length} shown={showOlderMine} onShow={() => setShowOlderMine(true)} />
+      {editingChange && <EditStudentChangeModal state={state} change={editingChange} runAction={runAction} onClose={() => setEditingChange(null)} />}
     </div>
   );
 }

@@ -34,6 +34,7 @@ async function request(path, options = {}) {
   if (!res.ok) {
     const err = new Error(data.error || "Something went wrong");
     err.status = data.status; // e.g. "PENDING" / "FROZEN" / "REJECTED", set by requireAuth
+    err.errors = data.errors; // per-row validation errors, if any — e.g. PUT /changes/:id (see routes/changes.js)
     throw err;
   }
   return data;
@@ -96,6 +97,8 @@ export const api = {
   proposeChange: (type, summary, payload) => request("/changes", { method: "POST", body: { type, summary, payload } }),
   approveChange: (id) => request(`/changes/${id}/approve`, { method: "POST" }),
   rejectChange: (id, reason) => request(`/changes/${id}/reject`, { method: "POST", body: { reason } }),
+  sendBackChange: (id, reason) => request(`/changes/${id}/send-back`, { method: "POST", body: { reason } }),
+  editChange: (id, rows) => request(`/changes/${id}`, { method: "PUT", body: { rows } }),
 
   // ---- Structure batches (Database Manager drafts, AO approves via approveChange above) ----
   submitStructureBatch: (payload) => request("/structure/batch", { method: "POST", body: payload }),
