@@ -125,17 +125,20 @@ function addExampleRow(sheet, hostels, hostelFloors, hostelRooms) {
 // ~255-char inline-list length once there are several hostels with long
 // names).
 function applyHostelDropdown(sheet, listRangeRef) {
-  for (let r = FIRST_DATA_ROW; r <= LAST_VALIDATED_ROW; r++) {
-    sheet.getCell(`C${r}`).dataValidation = {
-      type: "list",
-      allowBlank: false,
-      formulae: [listRangeRef],
-      showErrorMessage: true,
-      errorStyle: "stop",
-      errorTitle: "Invalid entry",
-      error: 'Choose "Day scholar" or one of the approved hostel names from the dropdown.',
-    };
-  }
+  // One dataValidation covering the whole range, not a per-cell loop — the
+  // loop used to assign an equal-but-distinct rule object to every cell,
+  // which exceljs serialized as two overlapping <dataValidation> sqref
+  // ranges (e.g. "C10:C500" and "C3:C500") instead of one clean "C3:C500".
+  // Functionally harmless (their union had no gaps), but pointless.
+  sheet.dataValidations.add(`C${FIRST_DATA_ROW}:C${LAST_VALIDATED_ROW}`, {
+    type: "list",
+    allowBlank: false,
+    formulae: [listRangeRef],
+    showErrorMessage: true,
+    errorStyle: "stop",
+    errorTitle: "Invalid entry",
+    error: 'Choose "Day scholar" or one of the approved hostel names from the dropdown.',
+  });
 }
 
 // The read-only lookup sheet: a human-readable Hostel/Floor/Room table for
