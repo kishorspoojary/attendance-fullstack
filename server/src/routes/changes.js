@@ -79,6 +79,12 @@ changesRouter.post("/changes/:id/reject", requireAuth, requireRole("AO"), async 
   res.json({ change: updated });
 });
 
+// Split out purely so the guard itself (as opposed to the DB round-trip
+// around it) has a direct test.
+export function isValidSendBackReason(reason) {
+  return typeof reason === "string" && reason.trim().length > 0;
+}
+
 // Send an add_student/bulk_add_students change back for edits instead of a
 // flat reject — mirrors structure_batch's send-back exactly (reason
 // required, same "sent_back" status), so a 42-row Excel upload doesn't have
@@ -86,7 +92,7 @@ changesRouter.post("/changes/:id/reject", requireAuth, requireRole("AO"), async 
 // via PUT below instead of re-uploading from scratch.
 changesRouter.post("/changes/:id/send-back", requireAuth, requireRole("AO"), async (req, res) => {
   const { reason } = req.body || {};
-  if (!reason || !reason.trim()) return res.status(400).json({ error: "A reason is required so the Database Manager knows what to fix" });
+  if (!isValidSendBackReason(reason)) return res.status(400).json({ error: "A reason is required so the Database Manager knows what to fix" });
 
   const change = await prisma.pendingChange.findUnique({ where: { id: req.params.id } });
   if (!change) return res.status(404).json({ error: "Change not found" });
@@ -101,6 +107,27 @@ changesRouter.post("/changes/:id/send-back", requireAuth, requireRole("AO"), asy
   });
   res.json({ change: updated });
 });
+
+// Turns a validated `toAdd` array (validateImportRows' output) back into
+// the payload/summary shape a PendingChange row needs — split out from the
+// route handler below purely so this piece has its own direct test; the
+// rest of the route's logic is either a thin DB fetch or already covered by
+// validateImportRows' own tests.
+export function buildEditedChangePayload(type, toAdd, className) {
+  if (type === "add_student") {
+    const s = toAdd[0];
+    return {
+      payload: { name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId, isLocal: s.isLocal },
+      summary: `Add student ${s.name} (${s.roll})`,
+    };
+  }
+  const hostellerCount = toAdd.filter((s) => !s.isLocal).length;
+  const dayScholarCount = toAdd.length - hostellerCount;
+  return {
+    payload: { students: toAdd },
+    summary: `Add ${toAdd.length} students to ${className} (${hostellerCount} hosteller${hostellerCount === 1 ? "" : "s"}, ${dayScholarCount} day scholar${dayScholarCount === 1 ? "" : "s"})`,
+  };
+}
 
 // Database Manager fixes a sent-back (or still-pending) add_student /
 // bulk_add_students change and resubmits it. The request body is always
@@ -155,17 +182,7 @@ changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async 
   }
   if (toAdd.length === 0) return res.status(400).json({ error: "No valid rows to submit" });
 
-  let payload, summary;
-  if (change.type === "add_student") {
-    const s = toAdd[0];
-    payload = { name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId, isLocal: s.isLocal };
-    summary = `Add student ${s.name} (${s.roll})`;
-  } else {
-    const hostellerCount = toAdd.filter((s) => !s.isLocal).length;
-    const dayScholarCount = toAdd.length - hostellerCount;
-    payload = { students: toAdd };
-    summary = `Add ${toAdd.length} students to ${cls.name} (${hostellerCount} hosteller${hostellerCount === 1 ? "" : "s"}, ${dayScholarCount} day scholar${dayScholarCount === 1 ? "" : "s"})`;
-  }
+  const { payload, summary } = buildEditedChangePayload(change.type, toAdd, cls.name);
 
   const updated = await prisma.pendingChange.update({
     where: { id: change.id },

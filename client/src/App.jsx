@@ -29,6 +29,7 @@ import {
   CalendarSearch, UserX, ListTree,
 } from "lucide-react";
 import { api } from "./api.js";
+import { isAlwaysVisibleDecision } from "./recency.js";
 
 /* ---------------------------------------------------------------- */
 /* 1. Shared constants                                                */
@@ -1190,17 +1191,10 @@ function StudentAddDetail({ state, s, showClass }) {
   );
 }
 
-// PendingChange has no separate "decided at" timestamp — schema.prisma only
-// has createdAt — so "last 2 days" uses createdAt as the age reference for
-// approved/rejected rows. sent_back rows are exempt entirely: the ball is
-// back in the Database Manager's court, so (like pending) they always show
-// regardless of age. Shared by AOApprovals' "Recent decisions" and
-// MyChanges' "My requests", so both pages age off old decisions the same way.
-const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
-function isAlwaysVisibleDecision(c) {
-  if (c.status !== "approved" && c.status !== "rejected") return true; // pending, sent_back
-  return Date.now() - new Date(c.createdAt).getTime() <= TWO_DAYS_MS;
-}
+// The 2-day recency rule itself (isAlwaysVisibleDecision) lives in
+// recency.js, imported above — pulled out of this file so it's directly
+// testable from a plain Node script without a JSX-aware loader, the same
+// reasoning as structureBatch.js and excel.js's validateImportRows.
 // A small "Show N older decisions" toggle shared by both lists below.
 function ShowOlderToggle({ olderCount, shown, onShow }) {
   if (shown || olderCount === 0) return null;
