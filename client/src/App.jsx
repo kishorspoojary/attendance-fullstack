@@ -1941,17 +1941,45 @@ function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, on
   );
 }
 
-// The edit/delete icon pair for one Manage Students row. `deletingIds` is
-// the Set of student ids with a delete request in flight; `isEditingBusy`
-// covers the reverse case (this row's edit modal is mid-submit). Either one
-// disables BOTH icons on this row — editing a student while its delete is
-// in flight (or vice versa) is exactly the kind of double-action this whole
-// guard exists to prevent — but only the icon that's actually the one in
-// flight (delete) shows a spinner, matching ApprovalActions' convention:
-// the clicked action spins, its siblings just gray out.
-function StudentRowActions({ s, deletingIds, isEditingBusy, onEdit, onDelete }) {
+// A student can have at most one UNRESOLVED (pending or sent_back) edit or
+// delete outstanding at a time. This is the AUTHORITATIVE guard — derived
+// from state.pendingChanges, the same data the server itself checks (see
+// routes/changes.js's findPendingStudentLock, which this deliberately
+// mirrors rather than imports — frontend and backend are separate
+// projects, same tradeoff as STAGES/recency.js elsewhere in this file) —
+// because the window that actually matters is the whole time a change sits
+// pending awaiting an AO's decision (minutes to days), not the brief moment
+// a request is in flight. A local busy flag alone can't cover that: it
+// resets the instant the request settles, well before an AO ever acts on
+// it, which is exactly how 123a17c's deletingIds-only guard still let a
+// second delete through once a refetch had already come back.
+const STUDENT_LOCK_TYPES = ["edit_student", "delete_student"];
+function findPendingStudentLock(pendingChanges, studentId) {
+  for (const c of pendingChanges) {
+    if (!STUDENT_LOCK_TYPES.includes(c.type)) continue;
+    if (c.status !== "pending" && c.status !== "sent_back") continue;
+    if (c.payload?.studentId === studentId) return c;
+  }
+  return null;
+}
+function PendingLockBadge({ lock }) {
+  if (!lock) return null;
+  return <span className="text-xs font-medium text-amber-600">Pending: {lock.type === "delete_student" ? "delete" : "edit"}</span>;
+}
+
+// The edit/delete icon pair for one Manage Students row. `lock` (a
+// PendingChange row, or null — see findPendingStudentLock above) is the
+// real, server-agreed guard and disables both icons for as long as it's
+// non-null, regardless of which type it is: an edit locks delete, a delete
+// locks edit, AND a delete locks a second delete. `deletingIds` (still a
+// Set of ids with a delete request in flight) and `isEditingBusy` are kept
+// on top purely as defense-in-depth for the split second before a propose
+// call's response — and the refetch after it — lands and state.pendingChanges
+// actually reflects the new lock; they're not what makes the real repro
+// (click delete, wait several seconds, click delete again) impossible.
+function StudentRowActions({ s, lock, deletingIds, isEditingBusy, onEdit, onDelete }) {
   const deleting = deletingIds.has(s.id);
-  const rowBusy = deleting || isEditingBusy;
+  const rowBusy = !!lock || deleting || isEditingBusy;
   return (
     <>
       <button onClick={onEdit} disabled={rowBusy} className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400"><Pencil size={14} /></button>
@@ -2135,36 +2163,46 @@ function StudentsAdmin({ state, runAction }) {
                       <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Tag</th><th className="px-4 py-2">Room</th><th className="px-4 py-2"></th></tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {g.filteredStudents.map((s) => (
-                        <tr key={s.id}>
-                          <td className="px-4 py-2 text-slate-600">{s.roll}</td>
-                          <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
-                          <td className="px-4 py-2"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
-                          <td className="px-4 py-2 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
-                          <td className="px-4 py-2">
-                            <div className="flex justify-end gap-2">
-                              <StudentRowActions
-                                s={s}
-                                deletingIds={deletingIds}
-                                isEditingBusy={editing?.id === s.id && editBusy}
-                                onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
-                                onDelete={() => submitDelete(s)}
-                              />
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                      {g.filteredStudents.map((s) => {
+                        const lock = findPendingStudentLock(state.pendingChanges, s.id);
+                        return (
+                          <tr key={s.id}>
+                            <td className="px-4 py-2 text-slate-600">{s.roll}</td>
+                            <td className="px-4 py-2">
+                              <div className="font-medium text-slate-800">{s.name}</div>
+                              <PendingLockBadge lock={lock} />
+                            </td>
+                            <td className="px-4 py-2"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
+                            <td className="px-4 py-2 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
+                            <td className="px-4 py-2">
+                              <div className="flex justify-end gap-2">
+                                <StudentRowActions
+                                  s={s}
+                                  lock={lock}
+                                  deletingIds={deletingIds}
+                                  isEditingBusy={editing?.id === s.id && editBusy}
+                                  onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
+                                  onDelete={() => submitDelete(s)}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </Card>
                 <div className="space-y-2 md:hidden">
-                  {g.filteredStudents.map((s) => (
+                  {g.filteredStudents.map((s) => {
+                    const lock = findPendingStudentLock(state.pendingChanges, s.id);
+                    return (
                     <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="font-display text-xs text-slate-400">{s.roll}</span>
                         <div className="flex gap-2">
                           <StudentRowActions
                             s={s}
+                            lock={lock}
                             deletingIds={deletingIds}
                             isEditingBusy={editing?.id === s.id && editBusy}
                             onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
@@ -2176,9 +2214,11 @@ function StudentsAdmin({ state, runAction }) {
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge>
                         <span className="text-xs text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</span>
+                        <PendingLockBadge lock={lock} />
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </Collapsible>
             </Card>

@@ -21,6 +21,25 @@ export const changesRouter = Router();
 // path.
 const SENDBACKABLE_TYPES = ["add_student", "bulk_add_students"];
 
+// A student can have at most one UNRESOLVED (pending or sent_back — a
+// sent_back edit/delete is still awaiting the Database Manager's fix, not
+// done) edit or delete outstanding at a time. "Resolved" (approved/rejected)
+// changes don't count — they're history, not a lock. Pure — takes
+// already-fetched PendingChange rows — for a direct test; mirrors
+// findPendingRollCollision's propose-time-hardening pattern in
+// routes/excel.js, keyed on which student a change targets rather than
+// which roll number.
+const STUDENT_LOCK_TYPES = ["edit_student", "delete_student"];
+export function findPendingStudentLock(pendingChanges, studentId, excludeChangeId) {
+  for (const c of pendingChanges) {
+    if (c.id === excludeChangeId) continue;
+    if (!STUDENT_LOCK_TYPES.includes(c.type)) continue;
+    if (c.status !== "pending" && c.status !== "sent_back") continue;
+    if (c.payload?.studentId === studentId) return c;
+  }
+  return null;
+}
+
 // Database Manager proposes a change. It has no effect on the real tables
 // until an AO approves it below — this just creates a record of the request.
 changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
@@ -50,6 +69,19 @@ changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (re
     const collision = findPendingRollCollision(pendingChanges, payload.classId, payload.roll, null);
     if (collision) {
       return res.status(409).json({ error: `Roll no. "${payload.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.` });
+    }
+  }
+
+  // The actual fix for "a row must have at most one pending change at a
+  // time": rejected here, at propose time, rather than relying on a local
+  // busy flag that only covers the few hundred ms a request is in flight —
+  // the real window that matters is the entire time a change sits pending
+  // awaiting an AO's decision, which can be minutes, hours, or days.
+  if ((type === "edit_student" || type === "delete_student") && payload?.studentId) {
+    const pendingChanges = await prisma.pendingChange.findMany({ where: { status: { in: ["pending", "sent_back"] }, type: { in: STUDENT_LOCK_TYPES } } });
+    const lock = findPendingStudentLock(pendingChanges, payload.studentId, null);
+    if (lock) {
+      return res.status(409).json({ error: "A request for this student is already pending AO approval." });
     }
   }
 
