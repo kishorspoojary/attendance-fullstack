@@ -81,8 +81,19 @@ export async function applyChange(prisma, change) {
       });
       break;
 
+    // Re-checked inside a transaction, same reasoning as
+    // revalidateStudentsForApproval: two duplicate delete_student requests
+    // for the same student (e.g. from a double-click before a busy guard
+    // existed) can both sit in the pending queue, both looking valid. If an
+    // AO approves one and then the other, the second must fail loudly
+    // rather than silently no-op or throw Prisma's own less-clear
+    // "record to update not found" error.
     case "delete_student":
-      await prisma.student.delete({ where: { id: p.studentId } });
+      await prisma.$transaction(async (tx) => {
+        const student = await tx.student.findUnique({ where: { id: p.studentId } });
+        if (!student) throw new Error("This student no longer exists — likely already deleted by an earlier request.");
+        await tx.student.delete({ where: { id: p.studentId } });
+      });
       break;
 
     case "add_hostel":

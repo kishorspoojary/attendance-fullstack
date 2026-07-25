@@ -1941,6 +1941,27 @@ function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, on
   );
 }
 
+// The edit/delete icon pair for one Manage Students row. `deletingIds` is
+// the Set of student ids with a delete request in flight; `isEditingBusy`
+// covers the reverse case (this row's edit modal is mid-submit). Either one
+// disables BOTH icons on this row — editing a student while its delete is
+// in flight (or vice versa) is exactly the kind of double-action this whole
+// guard exists to prevent — but only the icon that's actually the one in
+// flight (delete) shows a spinner, matching ApprovalActions' convention:
+// the clicked action spins, its siblings just gray out.
+function StudentRowActions({ s, deletingIds, isEditingBusy, onEdit, onDelete }) {
+  const deleting = deletingIds.has(s.id);
+  const rowBusy = deleting || isEditingBusy;
+  return (
+    <>
+      <button onClick={onEdit} disabled={rowBusy} className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400"><Pencil size={14} /></button>
+      <button onClick={onDelete} disabled={rowBusy} className="text-slate-400 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400">
+        {deleting ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
+      </button>
+    </>
+  );
+}
+
 function StudentsAdmin({ state, runAction }) {
   const [name, setName] = useState(""); const [roll, setRoll] = useState("");
   const [classId, setClassId] = useState("");
@@ -1950,6 +1971,13 @@ function StudentsAdmin({ state, runAction }) {
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editBusy, setEditBusy] = useState(false);
+  // Student ids with a delete request currently in flight — guards the
+  // per-row icons the same way ApprovalActions guards AO's card buttons:
+  // the clicked (delete) icon shows a spinner, its sibling (edit) on the
+  // SAME row just disables, and a rapid double-click can only ever fire one
+  // request (the button disables synchronously, before the network call
+  // even starts, not after it resolves).
+  const [deletingIds, setDeletingIds] = useState(() => new Set());
   const [search, setSearch] = useState("");
   const [excelClassId, setExcelClassId] = useState("");
   const [importBusy, setImportBusy] = useState(false);
@@ -1992,7 +2020,11 @@ function StudentsAdmin({ state, runAction }) {
     setAddBusy(false);
     if (result) { setName(""); setRoll(""); setClassId(""); setHostelOrDay(""); setRoomId(""); }
   };
-  const submitDelete = (s) => runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
+  const submitDelete = async (s) => {
+    setDeletingIds((prev) => new Set(prev).add(s.id));
+    await runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
+    setDeletingIds((prev) => { const next = new Set(prev); next.delete(s.id); return next; });
+  };
   const submitEdit = async () => {
     const isLocal = editing.hostelOrDay === DAY_SCHOLAR_VALUE;
     setEditBusy(true);
@@ -2111,8 +2143,13 @@ function StudentsAdmin({ state, runAction }) {
                           <td className="px-4 py-2 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
                           <td className="px-4 py-2">
                             <div className="flex justify-end gap-2">
-                              <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
-                              <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                              <StudentRowActions
+                                s={s}
+                                deletingIds={deletingIds}
+                                isEditingBusy={editing?.id === s.id && editBusy}
+                                onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
+                                onDelete={() => submitDelete(s)}
+                              />
                             </div>
                           </td>
                         </tr>
@@ -2126,8 +2163,13 @@ function StudentsAdmin({ state, runAction }) {
                       <div className="flex items-center justify-between">
                         <span className="font-display text-xs text-slate-400">{s.roll}</span>
                         <div className="flex gap-2">
-                          <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
-                          <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                          <StudentRowActions
+                            s={s}
+                            deletingIds={deletingIds}
+                            isEditingBusy={editing?.id === s.id && editBusy}
+                            onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
+                            onDelete={() => submitDelete(s)}
+                          />
                         </div>
                       </div>
                       <div className="mt-1 font-medium text-slate-800">{s.name}</div>
