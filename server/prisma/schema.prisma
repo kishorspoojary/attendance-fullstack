@@ -130,6 +130,18 @@ model Classroom {
 
 model Student {
   id      String      @id @default(cuid())
+  // A plain, DB-assigned, strictly-increasing insertion-order counter.
+  // Needed because neither of the two "obvious" tiebreakers actually work
+  // here: this model has no createdAt, and even if it did, every row in one
+  // bulk import shares the same value (Postgres's now()/CURRENT_TIMESTAMP
+  // is constant for the whole transaction, not per-statement) — while
+  // cuid() id ordering isn't a documented guarantee this app can rely on.
+  // Every listing that must preserve entry order (Students admin, the
+  // browse-students views, Excel export) orders by this field instead of
+  // roll number. Existing rows got backfilled in whatever order Postgres
+  // happened to pick — their original entry order isn't recoverable — but
+  // every row created from here on is correctly ordered.
+  seq     Int         @default(autoincrement())
   name    String
   roll    String
   classId String

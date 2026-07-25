@@ -10,6 +10,7 @@
 import bcrypt from "bcryptjs";
 import { generateTempPassword } from "./auth.js";
 import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
+import { revalidateStudentsForApproval } from "./studentApproval.js";
 
 // Returns undefined for most change types. create_staff is the one
 // exception — it returns { password }, the plaintext temp password for the
@@ -21,26 +22,42 @@ export async function applyChange(prisma, change) {
   const p = change.payload; // the data the Database Manager submitted, shape depends on change.type
 
   switch (change.type) {
+    // Re-validated INSIDE the transaction, right before the create — a
+    // batch that validated cleanly at propose time can go stale by
+    // approval time (another batch for the same class got approved first,
+    // introducing a roll collision neither proposal could have seen — see
+    // studentApproval.js). A collision throws and rolls back the whole
+    // transaction; nothing is created and the change is not marked approved.
     case "add_student":
-      await prisma.student.create({
-        data: {
-          name: p.name, roll: p.roll, classId: p.classId, roomId: p.roomId || null,
-          // Explicit tag wins if the Database Manager set one; otherwise
-          // infer it from whether a hostel room was given.
-          isLocal: p.isLocal !== undefined ? p.isLocal : !p.roomId,
-        },
+      await prisma.$transaction(async (tx) => {
+        await revalidateStudentsForApproval(tx, [p]);
+        await tx.student.create({
+          data: {
+            name: p.name, roll: p.roll, classId: p.classId, roomId: p.roomId || null,
+            // Explicit tag wins if the Database Manager set one; otherwise
+            // infer it from whether a hostel room was given.
+            isLocal: p.isLocal !== undefined ? p.isLocal : !p.roomId,
+          },
+        });
       });
       break;
 
     // One Excel upload becomes one PendingChange with an array of rows,
     // rather than one PendingChange per student — otherwise a 200-row
     // spreadsheet would mean 200 separate things for an AO to click through.
+    // createMany preserves p.students' array order in the INSERT's VALUES
+    // list, which is what gives every row its Student.seq in the same order
+    // the Database Manager entered them (see schema.prisma's comment on
+    // Student.seq) — never re-sort this array before this call.
     case "bulk_add_students":
-      await prisma.student.createMany({
-        data: p.students.map((s) => ({
-          name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
-          isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
-        })),
+      await prisma.$transaction(async (tx) => {
+        await revalidateStudentsForApproval(tx, p.students);
+        await tx.student.createMany({
+          data: p.students.map((s) => ({
+            name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
+            isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
+          })),
+        });
       });
       break;
 

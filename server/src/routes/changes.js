@@ -8,7 +8,7 @@ import { prisma } from "../db.js";
 import { requireAuth, requireRole, generateLoginKey } from "../auth.js";
 import { applyChange } from "../applyChange.js";
 import { FIELD_STAFF_ROLES } from "../constants.js";
-import { validateImportRows } from "./excel.js";
+import { validateImportRows, findPendingRollCollision } from "./excel.js";
 
 export const changesRouter = Router();
 
@@ -37,6 +37,20 @@ changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (re
       return res.status(400).json({ error: `role must be one of: ${FIELD_STAFF_ROLES.join(", ")}` });
     }
     payload.loginKey = await generateLoginKey();
+  }
+
+  // Cheap hardening: the manual "Add a student" form goes through this
+  // generic route (bulk_add_students, from the Excel upload, does its own
+  // equivalent check in routes/excel.js). The real safety net is
+  // studentApproval.js's in-transaction re-check at approval time; this
+  // just surfaces the same problem immediately instead of leaving it for
+  // an AO to hit much later.
+  if (type === "add_student" && payload?.classId && payload?.roll) {
+    const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: SENDBACKABLE_TYPES } } });
+    const collision = findPendingRollCollision(pendingChanges, payload.classId, payload.roll, null);
+    if (collision) {
+      return res.status(409).json({ error: `Roll no. "${payload.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.` });
+    }
   }
 
   const change = await prisma.pendingChange.create({
@@ -181,6 +195,18 @@ changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async 
     return res.status(400).json({ error: `${errors.length} row(s) had problems — nothing was saved.`, errors });
   }
   if (toAdd.length === 0) return res.status(400).json({ error: "No valid rows to submit" });
+
+  // Same cheap hardening as the propose-time routes — excludeChangeId keeps
+  // this batch from "colliding" with its own still-pending previous self.
+  const otherPendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: SENDBACKABLE_TYPES } } });
+  const pendingCollisionErrors = [];
+  for (const s of toAdd) {
+    const collision = findPendingRollCollision(otherPendingChanges, s.classId, s.roll, change.id);
+    if (collision) pendingCollisionErrors.push(`Roll no. "${s.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.`);
+  }
+  if (pendingCollisionErrors.length > 0) {
+    return res.status(400).json({ error: `${pendingCollisionErrors.length} row(s) collide with other pending requests — nothing was saved.`, errors: pendingCollisionErrors });
+  }
 
   const { payload, summary } = buildEditedChangePayload(change.type, toAdd, cls.name);
 

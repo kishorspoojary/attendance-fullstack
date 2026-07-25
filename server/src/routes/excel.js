@@ -70,6 +70,31 @@ function sanitizeFilenamePart(s) {
 }
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
+// exceljs's row.values doesn't always hand back a plain string/number for a
+// cell — a formula cell comes back as { formula, result, ... }, rich text
+// as { richText: [{ text }, ...] }, a hyperlink as { text, hyperlink }. The
+// previous version of this file did `String(values[n] ?? "").trim()`
+// directly, which for any of those turns into the literal string
+// "[object Object]" instead of the cell's actual displayed value — this is
+// exactly how two rows that visually showed the same roll number (one a
+// plain value, one a formula referencing it, e.g. from a dragged fill
+// handle) slipped past in-sheet duplicate detection: the formula row's
+// "roll" normalized to "[object Object]", not the number, so it never
+// collided with the other row at all. Recurses through result/richText/text
+// so a formula-that-returns-rich-text (unlikely, but exceljs allows it)
+// still resolves to plain text rather than falling through to "".
+export function cellToPlainString(raw) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw === "object") {
+    if (raw instanceof Date) return raw.toISOString();
+    if ("result" in raw) return cellToPlainString(raw.result); // formula cell — use the evaluated value
+    if (Array.isArray(raw.richText)) return raw.richText.map((r) => r.text).join("");
+    if ("text" in raw) return cellToPlainString(raw.text); // hyperlink cell
+    return ""; // an error cell ({ error: "#REF!" }) or anything unrecognized — treat as blank, not "[object Object]"
+  }
+  return String(raw);
+}
+
 function fillCell(cell, argb) {
   cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
 }
@@ -343,6 +368,27 @@ export function validateImportRows(rows, { classId, className, hostels, hostelFl
   return { toAdd, errors };
 }
 
+// "Cheap hardening" (per the bug report): catches the common case of two
+// still-pending requests for the same class colliding on roll number
+// before either is even approved, rather than leaving it entirely to
+// studentApproval.js's in-transaction re-check at approval time — that
+// re-check is still the real safety net (this is just a nicer, earlier
+// error), since a THIRD request could always slip in between this check and
+// the eventual approval. Pure — takes already-fetched PendingChange rows,
+// not a Prisma client — for a direct test. excludeChangeId lets the edit
+// route (PUT /changes/:id) skip comparing a batch against itself.
+export function findPendingRollCollision(pendingChanges, classId, roll, excludeChangeId) {
+  const rollKey = norm(roll);
+  for (const c of pendingChanges) {
+    if (c.id === excludeChangeId || c.status !== "pending") continue;
+    if (c.type === "add_student" && c.payload?.classId === classId && norm(c.payload?.roll) === rollKey) return c;
+    if (c.type === "bulk_add_students" && Array.isArray(c.payload?.students)) {
+      if (c.payload.students.some((s) => s.classId === classId && norm(s.roll) === rollKey)) return c;
+    }
+  }
+  return null;
+}
+
 // Reads an uploaded per-class sheet (see addReferenceSheet/
 // readClassIdFromWorkbook above — the class is baked into a hidden cell on
 // the Reference sheet, never a Students-sheet column, and never inferred
@@ -386,10 +432,10 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     const values = row.values;
     rawRows.push({
       rowNumber,
-      roll: String(values[1] ?? "").trim(),
-      name: String(values[2] ?? "").trim(),
-      hostelOrDay: String(values[3] ?? "").trim(),
-      roomNo: String(values[4] ?? "").trim(),
+      roll: cellToPlainString(values[1]).trim(),
+      name: cellToPlainString(values[2]).trim(),
+      hostelOrDay: cellToPlainString(values[3]).trim(),
+      roomNo: cellToPlainString(values[4]).trim(),
     });
   });
 
@@ -401,6 +447,16 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
   }
   if (toAdd.length === 0) {
     return res.status(400).json({ error: "No student rows found in the sheet." });
+  }
+
+  const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: ["add_student", "bulk_add_students"] } } });
+  const pendingCollisionErrors = [];
+  for (const s of toAdd) {
+    const collision = findPendingRollCollision(pendingChanges, s.classId, s.roll, null);
+    if (collision) pendingCollisionErrors.push(`Roll no. "${s.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.`);
+  }
+  if (pendingCollisionErrors.length > 0) {
+    return res.status(400).json({ error: `${pendingCollisionErrors.length} row(s) collide with other pending requests — nothing was imported.`, errors: pendingCollisionErrors });
   }
 
   const hostellerCount = toAdd.filter((s) => !s.isLocal).length;
