@@ -785,14 +785,17 @@ export default function App() {
       { id: "status", label: "Attendance status", icon: LayoutDashboard },
     ],
     // Daily tasks first, setup/admin tasks last — reordered from the
-    // original creation order after live use showed Students/absentees/My
-    // requests are what a Database Manager reaches for most days, while
-    // Hostels & classes / Assign staff / Create staff account are mostly
-    // one-time-setup screens.
+    // original creation order after live use showed absentees/View
+    // students/Manage students/My requests are what a Database Manager
+    // reaches for most days, while Hostels & classes / Assign staff /
+    // Create staff account are mostly one-time-setup screens. "students"
+    // keeps its id (route/state key) but is now labeled "Manage students" —
+    // it's about entering/maintaining records, distinct from the read-only
+    // "View students" browse page right above it.
     DB_MANAGER: [
-      { id: "students", label: "Students", icon: GraduationCap },
       { id: "absentees", label: "View absentees", icon: ClipboardCheck },
       { id: "viewstudents", label: "View students", icon: ListTree },
+      { id: "students", label: "Manage students", icon: GraduationCap },
       { id: "mychanges", label: "My requests", icon: Clock },
       { id: "structure", label: "Hostels & classes", icon: Building2 },
       { id: "assign", label: "Assign staff", icon: UserCog },
@@ -1187,16 +1190,18 @@ function StructureBatchTree({ payload }) {
   );
 }
 
-// A compact "Hostel / Room 001" label for one payload student's room —
+// A compact "Hostel / 001" label for one payload student's room —
 // deliberately shorter than roomLabel() (which also includes the floor
 // name), since this is used inline next to a roll+name on an approval card,
-// not as a standalone lookup line.
+// not as a standalone lookup line. Path strings stay number-only (no "Room "
+// prefix) — a bare room number reads fine once it's already inside a
+// hostel/floor path.
 function studentHostelRoomLabel(state, roomId) {
   const room = state.hostelRooms.find((r) => r.id === roomId);
   if (!room) return null;
   const floor = state.hostelFloors.find((f) => f.id === room.hostelFloorId);
   const hostel = floor && state.hostels.find((h) => h.id === floor.hostelId);
-  return `${hostel?.name || "?"} / Room ${room.roomNo}`;
+  return `${hostel?.name || "?"} / ${room.roomNo}`;
 }
 // One line of {roll, name, classId, roomId, isLocal} — the shape both
 // add_student's payload and each entry of bulk_add_students' payload.students
@@ -1526,8 +1531,12 @@ function emptyStudentsMsg(role, kind) {
 // hostel, floor, room, day-scholar class group). `forceOpen` lets an active
 // search expand every level automatically so matches aren't hidden behind a
 // manual toggle the user never touched.
-function Collapsible({ header, children, forceOpen }) {
-  const [open, setOpen] = useState(false);
+// `forceOpen` pins the section open and un-collapsible (used for search
+// auto-expand — the user shouldn't be able to hide a match). `defaultOpen`
+// just seeds the initial state (used where a list should start expanded,
+// e.g. absentees, but stay individually collapsible).
+function Collapsible({ header, children, forceOpen, defaultOpen }) {
+  const [open, setOpen] = useState(!!defaultOpen);
   const isOpen = forceOpen || open;
   return (
     <div>
@@ -1575,7 +1584,7 @@ function StudentRows({ students, showClass }) {
 }
 
 // College view: classes as collapsible sections; each student row shows
-// their hostel dimension ("Boys Hostel A · Room 101") or a "Day scholar"
+// their hostel dimension ("Boys Hostel A · 101") or a "Day scholar"
 // pill — driven off whether the endpoint resolved a room, not the isLocal
 // flag, so it stays correct even for the rare student where the two disagree.
 function CollegeStudentsView({ classes, query, role }) {
@@ -1614,7 +1623,7 @@ function CollegeStudentsView({ classes, query, role }) {
                     <tr key={s.id}>
                       <td className="px-4 py-2 text-slate-600">{s.roll}</td>
                       <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
-                      <td className="px-4 py-2">{s.hostelName ? `${s.hostelName} · Room ${s.roomNo}` : <Badge tone="amber">Day scholar</Badge>}</td>
+                      <td className="px-4 py-2">{s.hostelName ? `${s.hostelName} · ${s.roomNo}` : <Badge tone="amber">Day scholar</Badge>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1624,7 +1633,7 @@ function CollegeStudentsView({ classes, query, role }) {
               {c.filteredStudents.map((s) => (
                 <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
                   <div className="flex items-center justify-between"><span className="font-medium text-slate-800">{s.name}</span><span className="text-xs text-slate-400">{s.roll}</span></div>
-                  <div className="mt-1">{s.hostelName ? <span className="text-xs text-slate-500">{s.hostelName} · Room {s.roomNo}</span> : <Badge tone="amber">Day scholar</Badge>}</div>
+                  <div className="mt-1">{s.hostelName ? <span className="text-xs text-slate-500">{s.hostelName} · {s.roomNo}</span> : <Badge tone="amber">Day scholar</Badge>}</div>
                 </div>
               ))}
             </div>
@@ -1887,12 +1896,13 @@ function CoordinatorApprovals({ state, date, runAction }) {
 // Hostel structure is three levels deep (Hostel -> HostelFloor -> Room), so
 // anywhere a room needs a human-readable label, build it by walking back
 // up through the two lookups rather than storing a flat string anywhere.
+// Number-only at the end — no "Room " prefix — once it's inside a path.
 function roomLabel(state, roomId) {
   const room = state.hostelRooms.find((r) => r.id === roomId);
   if (!room) return "Unknown room";
   const floor = state.hostelFloors.find((f) => f.id === room.hostelFloorId);
   const hostel = floor && state.hostels.find((h) => h.id === floor.hostelId);
-  return `${hostel?.name || "?"} / ${floor?.name || "?"} / Room ${room.roomNo}`;
+  return `${hostel?.name || "?"} / ${floor?.name || "?"} / ${room.roomNo}`;
 }
 function roomOptions(state) {
   return state.hostelRooms.map((r) => ({ value: r.id, label: roomLabel(state, r.id) }));
@@ -1991,15 +2001,34 @@ function StudentsAdmin({ state, runAction }) {
     if (result) setEditing(null);
   };
 
+  // Grouped by class (same shape/behavior as ViewStudents' college view —
+  // search matches name/roll only, not class name, and auto-expands
+  // whichever groups contain a match) rather than one flat table, since a
+  // school-sized roster (thousands of students) in one ungrouped table
+  // doesn't scale. Students whose class no longer resolves (defensive —
+  // nothing in this app should produce that, but nothing prevents it at the
+  // schema level either) land in a trailing "Unassigned" group instead of
+  // silently vanishing. Order within each group is whatever order
+  // state.students already arrived in (server-side seq order — see
+  // schema.prisma's comment on Student.seq); only the GROUPS themselves are
+  // sorted, by class name.
   const q = search.trim().toLowerCase();
-  const filtered = !q ? state.students : state.students.filter((s) => {
+  const matchesSearch = (s) => !q || s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q);
+  const groupsMap = new Map();
+  for (const s of state.students) {
     const cls = state.classes.find((c) => c.id === s.classId);
-    return s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q) || cls?.name.toLowerCase().includes(q);
-  });
+    const key = cls ? cls.id : "__unassigned";
+    if (!groupsMap.has(key)) groupsMap.set(key, { id: key, name: cls ? cls.name : "Unassigned", students: [] });
+    groupsMap.get(key).students.push(s);
+  }
+  const groups = [...groupsMap.values()].sort((a, b) => (a.id === "__unassigned" ? 1 : b.id === "__unassigned" ? -1 : a.name.localeCompare(b.name)));
+  const visibleGroups = groups
+    .map((g) => ({ ...g, filteredStudents: g.students.filter(matchesSearch) }))
+    .filter((g) => !q || g.filteredStudents.length > 0);
 
   return (
     <div>
-      <SectionTitle icon={GraduationCap} title="Students" subtitle="Changes are sent to the AO for approval before they take effect." />
+      <SectionTitle icon={GraduationCap} title="Manage students" subtitle="Changes are sent to the AO for approval before they take effect." />
 
       <Card className="mb-6 p-4">
         <p className="mb-1 text-sm font-semibold text-slate-700">Add many at once with Excel</p>
@@ -2052,35 +2081,68 @@ function StudentsAdmin({ state, runAction }) {
         )}
       </Card>
 
-      <SearchBox value={search} onChange={setSearch} placeholder="Search by name, roll number, or class..." />
-      <Card className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Roll</th><th className="px-4 py-2.5">Class</th><th className="px-4 py-2.5">Tag</th><th className="px-4 py-2.5">Room</th><th className="px-4 py-2.5"></th></tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {filtered.map((s) => {
-              const cls = state.classes.find((c) => c.id === s.classId);
-              return (
-                <tr key={s.id}>
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{s.roll}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{cls?.name}</td>
-                  <td className="px-4 py-2.5"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
-                  <td className="px-4 py-2.5 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
-                      <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+      <SearchBox value={search} onChange={setSearch} placeholder="Search by name or roll number..." />
+      {visibleGroups.length === 0 ? (
+        <EmptyNote text={q ? "No students match your search." : "No students yet."} />
+      ) : (
+        <div className="space-y-3">
+          {visibleGroups.map((g) => (
+            <Card key={g.id} className="p-3">
+              <Collapsible
+                forceOpen={!!q}
+                header={
+                  <div className="flex flex-1 items-center justify-between gap-2">
+                    <span className="font-medium text-slate-800">{g.name}</span>
+                    <Badge tone="slate">{pluralize(g.students.length, "student")}</Badge>
+                  </div>
+                }
+              >
+                <Card className="hidden overflow-x-auto md:block">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Tag</th><th className="px-4 py-2">Room</th><th className="px-4 py-2"></th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {g.filteredStudents.map((s) => (
+                        <tr key={s.id}>
+                          <td className="px-4 py-2 text-slate-600">{s.roll}</td>
+                          <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
+                          <td className="px-4 py-2"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
+                          <td className="px-4 py-2 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
+                          <td className="px-4 py-2">
+                            <div className="flex justify-end gap-2">
+                              <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
+                              <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Card>
+                <div className="space-y-2 md:hidden">
+                  {g.filteredStudents.map((s) => (
+                    <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="font-display text-xs text-slate-400">{s.roll}</span>
+                        <div className="flex gap-2">
+                          <button onClick={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
+                          <button onClick={() => submitDelete(s)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+                      <div className="mt-1 font-medium text-slate-800">{s.name}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge>
+                        <span className="text-xs text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</span>
+                      </div>
                     </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {filtered.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">No matching students.</td></tr>}
-          </tbody>
-        </table>
-      </Card>
+                  ))}
+                </div>
+              </Collapsible>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {editing && (
         <div className="fixed inset-0 z-30 grid place-items-center bg-slate-900/40 p-4">
@@ -2597,47 +2659,97 @@ function CreateStaffAdmin({ state, runAction }) {
 
 // Read-only for the Database Manager: who's absent today, nothing else.
 // Combines Warden/LAI-reported absentees with persistent "away" students.
+// Resolves why one student is on the absentee list, from whichever of the
+// three sources actually has it: a Warden's reason (wardenAbsences), an
+// LAI's entry (laiAbsences — schema.prisma notes LAI never sets a reason,
+// so this is always "—"), or the persistent away flag (Student.awayReason —
+// "Went home" and similar; doesn't touch today's record at all, see
+// constants.js). At most one of these applies to a given student on a given
+// day, so the first match wins.
+function resolveAbsenceReason(studentId, record, student) {
+  const wardenEntry = record.wardenAbsences?.[studentId];
+  if (wardenEntry) return { reason: wardenEntry.reason || "—", isAway: false };
+  if (record.laiAbsences?.[studentId]) return { reason: "—", isAway: false };
+  if (student.awayReason) return { reason: student.awayReason, isAway: true };
+  return { reason: "—", isAway: false };
+}
+
 function AbsenteesView({ state }) {
   const [viewDate, setViewDate] = useState(todayStr());
   const day = state.attendance[viewDate] || {};
-  const rows = [];
-  for (const c of state.classes) {
-    const r = day[c.id] || emptyRecord();
-    const ids = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
-    state.students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
-    for (const sid of ids) {
-      const student = state.students.find((s) => s.id === sid);
-      if (student) rows.push({ roll: student.roll, name: student.name, className: c.name });
-    }
-  }
-  rows.sort((a, b) => a.className.localeCompare(b.className) || a.roll.localeCompare(b.roll));
+
+  // Grouped by class, same Collapsible pattern as everywhere else, but
+  // expanded by default (defaultOpen, not forceOpen — still individually
+  // collapsible) since scanning the whole day's list is the entire point
+  // of this page, unlike Manage students/View students where most classes
+  // are collapsed noise until you search.
+  const groups = state.classes
+    .map((c) => {
+      const r = day[c.id] || emptyRecord();
+      const ids = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+      state.students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
+      const students = [...ids]
+        .map((sid) => state.students.find((s) => s.id === sid))
+        .filter(Boolean)
+        .map((s) => ({ ...s, ...resolveAbsenceReason(s.id, r, s) }));
+      return { id: c.id, name: c.name, students };
+    })
+    .filter((g) => g.students.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={ClipboardCheck} title="View absentees" subtitle={`${formatDMY(viewDate)} — roll number, name, and class only.`} />
+        <SectionTitle icon={ClipboardCheck} title="View absentees" subtitle={`${formatDMY(viewDate)} — grouped by class, with reason where recorded.`} />
         <div className="flex flex-wrap items-end gap-2">
           <Field label="Date"><input type="date" max={todayStr()} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
           <Btn variant="outline" onClick={() => api.exportAbsentees(viewDate)}><FileDown size={14} /> Download Excel</Btn>
         </div>
       </div>
-      <Card className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Roll number</th><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Class</th></tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((r, i) => (
-              <tr key={i}>
-                <td className="px-4 py-2.5 text-slate-600">{r.roll}</td>
-                <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
-                <td className="px-4 py-2.5 text-slate-600">{r.className}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-slate-400">No absentees recorded for this date.</td></tr>}
-          </tbody>
-        </table>
-      </Card>
+      {groups.length === 0 ? (
+        <EmptyNote text="No absentees recorded for this date." />
+      ) : (
+        <div className="space-y-3">
+          {groups.map((g) => (
+            <Card key={g.id} className="p-3">
+              <Collapsible
+                defaultOpen
+                header={
+                  <div className="flex flex-1 items-center justify-between gap-2">
+                    <span className="font-medium text-slate-800">{g.name}</span>
+                    <Badge tone="amber">{g.students.length} absent</Badge>
+                  </div>
+                }
+              >
+                <Card className="hidden overflow-x-auto md:block">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Reason</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {g.students.map((s) => (
+                        <tr key={s.id}>
+                          <td className="px-4 py-2 text-slate-600">{s.roll}</td>
+                          <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
+                          <td className="px-4 py-2 text-slate-600">{s.reason}{s.isAway && <span className="ml-1.5 text-xs text-slate-400">(away)</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Card>
+                <div className="space-y-2 md:hidden">
+                  {g.students.map((s) => (
+                    <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+                      <div className="flex items-center justify-between"><span className="font-medium text-slate-800">{s.name}</span><span className="text-xs text-slate-400">{s.roll}</span></div>
+                      <div className="mt-1 text-xs text-slate-500">{s.reason}{s.isAway && <span className="ml-1.5 text-slate-400">(away)</span>}</div>
+                    </div>
+                  ))}
+                </div>
+              </Collapsible>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

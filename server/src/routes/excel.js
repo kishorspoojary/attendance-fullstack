@@ -299,6 +299,18 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
   ]);
   const recordByClassId = Object.fromEntries(records.map((r) => [r.classId, r]));
 
+  // Same reason resolution as the client's AbsenteesView: a Warden's
+  // wardenAbsences entry (may have a reason), an LAI's laiAbsences entry
+  // (schema.prisma notes LAI never sets a reason, hence "—"), or the
+  // persistent away flag on the student — at most one applies per student.
+  const resolveReason = (studentId, record, student) => {
+    const wardenEntry = record?.wardenAbsences?.[studentId];
+    if (wardenEntry) return wardenEntry.reason || "—";
+    if (record?.laiAbsences?.[studentId]) return "—";
+    if (student.awayReason) return `${student.awayReason} (away)`;
+    return "—";
+  };
+
   const rows = [];
   for (const c of classes) {
     const r = recordByClassId[c.id];
@@ -306,15 +318,17 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
     students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
     for (const sid of ids) {
       const student = students.find((s) => s.id === sid);
-      if (student) rows.push({ roll: student.roll, name: student.name, className: c.name });
+      if (student) rows.push({ roll: student.roll, name: student.name, className: c.name, reason: resolveReason(sid, r, student) });
     }
   }
+  // Grouped by class (contiguous blocks), roll order within each — sorting
+  // by className first is what makes this "grouped" in a plain worksheet.
   rows.sort((a, b) => a.className.localeCompare(b.className) || a.roll.localeCompare(b.roll));
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Absentees");
-  sheet.addRow(["Roll Number", "Name", "Class / Batch"]).font = { bold: true };
-  rows.forEach((r) => sheet.addRow([r.roll, r.name, r.className]));
+  sheet.addRow(["Roll Number", "Name", "Class / Batch", "Reason"]).font = { bold: true };
+  rows.forEach((r) => sheet.addRow([r.roll, r.name, r.className, r.reason]));
   sheet.columns.forEach((col) => { col.width = 20; });
 
   await sendWorkbook(res, workbook, `absentees-${date}.xlsx`);
