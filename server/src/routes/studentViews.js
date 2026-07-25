@@ -79,7 +79,9 @@ studentViewsRouter.get("/students/by-class", requireAuth, requireRole("DB_MANAGE
     orderBy: { name: "asc" },
     include: {
       students: {
-        orderBy: { roll: "asc" },
+        // seq, not roll — preserves entry order (see schema.prisma's
+        // comment on Student.seq); roll numbers don't sort in entry order.
+        orderBy: { seq: "asc" },
         include: { room: { include: { hostelFloor: { include: { hostel: true } } } } },
       },
     },
@@ -100,7 +102,7 @@ studentViewsRouter.get("/students/by-hostel", requireAuth, requireRole("DB_MANAG
           include: {
             rooms: {
               orderBy: { roomNo: "asc" },
-              include: { students: { orderBy: { roll: "asc" }, include: { class: true } } },
+              include: { students: { orderBy: { seq: "asc" }, include: { class: true } } },
             },
           },
         },
@@ -108,7 +110,7 @@ studentViewsRouter.get("/students/by-hostel", requireAuth, requireRole("DB_MANAG
     }),
     prisma.student.findMany({
       where: { roomId: null },
-      orderBy: { roll: "asc" },
+      orderBy: { seq: "asc" },
       include: { class: true },
     }),
   ]);

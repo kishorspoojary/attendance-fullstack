@@ -205,9 +205,21 @@ function SentBackBanner({ record }) {
 // A small inline "click, then confirm" control for actions that need a
 // yes/no guard but not a reason — freeze/unfreeze accounts, etc. Same
 // no-modal-component approach as SendBackButton below.
-function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm, disabled }) {
+// `busy`: true while onConfirm's request is in flight. Clicking "Confirm"
+// closes the confirm step immediately (setOpen(false) doesn't wait for
+// onConfirm to resolve), so the busy spinner has to live on the collapsed
+// button, not the confirm step — that's also naturally where a double-click
+// would otherwise land.
+function ConfirmButton({ label, confirmLabel, variant = "danger", icon: Icon, onConfirm, disabled, busy }) {
   const [open, setOpen] = useState(false);
-  if (!open) return <Btn size="touch" variant={variant} disabled={disabled} onClick={() => setOpen(true)}>{Icon && <Icon size={12} />} {label}</Btn>;
+  const isDisabled = disabled || busy;
+  if (!open) {
+    return (
+      <Btn size="touch" variant={variant} disabled={isDisabled} onClick={() => setOpen(true)}>
+        {busy ? <Loader2 className="animate-spin" size={12} /> : Icon && <Icon size={12} />} {busy ? "..." : label}
+      </Btn>
+    );
+  }
   return (
     <div className="inline-flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Are you sure?</span>
@@ -419,11 +431,20 @@ function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, 
   );
 }
 // A small inline "type a reason, then confirm" control used for send-back
-// buttons everywhere, so it doesn't need its own modal component.
-function SendBackButton({ onSend }) {
+// buttons everywhere, so it doesn't need its own modal component. `busy` and
+// `disabled` are distinct: busy means THIS card's send-back is in flight
+// (shows a spinner), disabled means some OTHER action on the same card is
+// in flight (no spinner, just grayed out) — see AOApprovals' ApprovalActions.
+function SendBackButton({ onSend, busy, disabled }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
-  if (!open) return <Btn size="sm" variant="outline" onClick={() => setOpen(true)}><Undo2 size={13} /> Send back</Btn>;
+  if (!open) {
+    return (
+      <Btn size="sm" variant="outline" disabled={busy || disabled} onClick={() => setOpen(true)}>
+        {busy ? <Loader2 className="animate-spin" size={13} /> : <Undo2 size={13} />} {busy ? "..." : "Send back"}
+      </Btn>
+    );
+  }
   return (
     <div className="flex w-full flex-col gap-2 sm:w-64">
       <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being sent back?" className={inputCls} />
@@ -763,14 +784,19 @@ export default function App() {
       { id: "coordinator", label: "Attendance approvals", icon: ListChecks },
       { id: "status", label: "Attendance status", icon: LayoutDashboard },
     ],
+    // Daily tasks first, setup/admin tasks last — reordered from the
+    // original creation order after live use showed Students/absentees/My
+    // requests are what a Database Manager reaches for most days, while
+    // Hostels & classes / Assign staff / Create staff account are mostly
+    // one-time-setup screens.
     DB_MANAGER: [
       { id: "students", label: "Students", icon: GraduationCap },
+      { id: "absentees", label: "View absentees", icon: ClipboardCheck },
       { id: "viewstudents", label: "View students", icon: ListTree },
+      { id: "mychanges", label: "My requests", icon: Clock },
       { id: "structure", label: "Hostels & classes", icon: Building2 },
       { id: "assign", label: "Assign staff", icon: UserCog },
       { id: "createstaff", label: "Create staff account", icon: UserPlus },
-      { id: "absentees", label: "View absentees", icon: ClipboardCheck },
-      { id: "mychanges", label: "My requests", icon: Clock },
     ],
     WARDEN: [{ id: "warden", label: "Mark absentees", icon: Bed }],
     DO: [{ id: "do", label: "Verify & approve", icon: Phone }],
@@ -1205,6 +1231,35 @@ function ShowOlderToggle({ olderCount, shown, onShow }) {
   );
 }
 
+// Approve / Reject / Send back for one pending card, with a busy state
+// scoped to that card: whichever button was clicked shows a spinner, its
+// siblings on the SAME card just gray out (no spinner) — other cards stay
+// fully interactable. Also blocks double-click as a duplicate-creation
+// vector, since the clicked button disables itself the instant it's clicked.
+// `busy` is { id, action } | null, shared across every card by AOApprovals
+// (only one action can plausibly be in flight from one person clicking).
+function ApprovalActions({ c, busy, onApprove, onReject, onSendBack, approveLabel }) {
+  const cardBusy = busy?.id === c.id;
+  const isApproving = cardBusy && busy.action === "approve";
+  const isRejecting = cardBusy && busy.action === "reject";
+  const isSendingBack = cardBusy && busy.action === "sendback";
+  return (
+    <>
+      {onSendBack && <SendBackButton onSend={(reason) => onSendBack(c, reason)} busy={isSendingBack} disabled={cardBusy && !isSendingBack} />}
+      <div className="flex gap-2">
+        <Btn size="sm" variant="success" disabled={cardBusy} onClick={() => onApprove(c)}>
+          {isApproving ? <Loader2 className="animate-spin" size={13} /> : <Check size={13} />} {isApproving ? "..." : approveLabel || "Approve"}
+        </Btn>
+        {onReject && (
+          <Btn size="sm" variant="danger" disabled={cardBusy} onClick={() => onReject(c)}>
+            {isRejecting ? <Loader2 className="animate-spin" size={13} /> : <X size={13} />} {isRejecting ? "..." : "Reject"}
+          </Btn>
+        )}
+      </div>
+    </>
+  );
+}
+
 function AOApprovals({ state, runAction }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
   // Only ever set for an approved create_staff change — that's the only
@@ -1214,14 +1269,22 @@ function AOApprovals({ state, runAction }) {
   // here to whichever AO clicked approve, then gone.
   const [newStaffPassword, setNewStaffPassword] = useState(null); // { name, password }
   const [showOlderDecisions, setShowOlderDecisions] = useState(false);
+  // { id, action } | null — which pending change's Approve/Reject/Send back
+  // is currently in flight; see ApprovalActions above for how this both
+  // shows a spinner on the clicked button and blocks a double-click.
+  const [busy, setBusy] = useState(null);
+  const withBusy = async (id, action, fn) => {
+    setBusy({ id, action });
+    try { return await fn(); } finally { setBusy(null); }
+  };
 
-  const approve = async (c) => {
+  const approve = (c) => withBusy(c.id, "approve", async () => {
     const result = await runAction(() => api.approveChange(c.id), "Approved");
     if (result?.password) setNewStaffPassword({ name: c.payload?.name || "the new account", password: result.password });
-  };
-  const reject = (c) => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected");
-  const sendBackBatch = (c, reason) => runAction(() => api.sendBackStructureBatch(c.id, reason), "Sent back for edits");
-  const sendBackStudentChange = (c, reason) => runAction(() => api.sendBackChange(c.id, reason), "Sent back for edits");
+  });
+  const reject = (c) => withBusy(c.id, "reject", () => runAction(() => api.rejectChange(c.id, "Not approved"), "Rejected"));
+  const sendBackBatch = (c, reason) => withBusy(c.id, "sendback", () => runAction(() => api.sendBackStructureBatch(c.id, reason), "Sent back for edits"));
+  const sendBackStudentChange = (c, reason) => withBusy(c.id, "sendback", () => runAction(() => api.sendBackChange(c.id, reason), "Sent back for edits"));
 
   const decisionTone = (status) => (status === "approved" ? "emerald" : status === "sent_back" ? "amber" : "rose");
 
@@ -1260,8 +1323,7 @@ function AOApprovals({ state, runAction }) {
                 </div>
                 <StructureBatchTree payload={c.payload} />
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  <SendBackButton onSend={(reason) => sendBackBatch(c, reason)} />
-                  <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve all — create {pluralize(counts.total, "record")}</Btn>
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onSendBack={sendBackBatch} approveLabel={`Approve all — create ${pluralize(counts.total, "record")}`} />
                 </div>
               </Card>
             );
@@ -1276,11 +1338,7 @@ function AOApprovals({ state, runAction }) {
                 </Collapsible>
                 <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  <SendBackButton onSend={(reason) => sendBackStudentChange(c, reason)} />
-                  <div className="flex gap-2">
-                    <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
-                    <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
-                  </div>
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
                 </div>
               </Card>
             );
@@ -1292,11 +1350,7 @@ function AOApprovals({ state, runAction }) {
                 <div className="mt-1"><StudentAddDetail state={state} s={c.payload} showClass /></div>
                 <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  <SendBackButton onSend={(reason) => sendBackStudentChange(c, reason)} />
-                  <div className="flex gap-2">
-                    <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
-                    <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
-                  </div>
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
                 </div>
               </Card>
             );
@@ -1312,10 +1366,7 @@ function AOApprovals({ state, runAction }) {
                     {c.type === "create_staff" && c.payload?.loginKey && <> · assigned key <span className="font-display">{c.payload.loginKey}</span></>}
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <Btn size="sm" variant="success" onClick={() => approve(c)}><Check size={13} /> Approve</Btn>
-                  <Btn size="sm" variant="danger" onClick={() => reject(c)}><X size={13} /> Reject</Btn>
-                </div>
+                <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} />
               </div>
             </Card>
           );
@@ -1885,7 +1936,10 @@ function StudentsAdmin({ state, runAction }) {
   const [classId, setClassId] = useState("");
   const [hostelOrDay, setHostelOrDay] = useState(""); const [roomId, setRoomId] = useState("");
   const [addError, setAddError] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [showManualAdd, setShowManualAdd] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [excelClassId, setExcelClassId] = useState("");
   const [importBusy, setImportBusy] = useState(false);
@@ -1908,7 +1962,11 @@ function StudentsAdmin({ state, runAction }) {
     setImportBusy(false);
   };
 
-  const submitAdd = () => {
+  // Both submitAdd and submitEdit stay open (busy, disabled) until the
+  // request resolves, and only reset/close on success — runAction returns
+  // null on a caught failure (it already toasted the message), so the form
+  // stays filled in to fix and retry rather than losing what was typed.
+  const submitAdd = async () => {
     setAddError("");
     if (!name.trim() || !roll.trim() || !classId || !hostelOrDay) {
       return setAddError("Fill in name, roll number, class, and whether they're a day scholar or hosteller.");
@@ -1919,14 +1977,18 @@ function StudentsAdmin({ state, runAction }) {
     if (dup) return setAddError(`Roll number "${roll.trim()}" already exists in this class (${dup.name}).`);
 
     const isLocal = hostelOrDay === DAY_SCHOLAR_VALUE;
-    runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name: name.trim(), roll: roll.trim(), classId, roomId: isLocal ? null : roomId, isLocal }), "Sent to AO for approval");
-    setName(""); setRoll(""); setClassId(""); setHostelOrDay(""); setRoomId("");
+    setAddBusy(true);
+    const result = await runAction(() => api.proposeChange("add_student", `Add student ${name} (${roll})`, { name: name.trim(), roll: roll.trim(), classId, roomId: isLocal ? null : roomId, isLocal }), "Sent to AO for approval");
+    setAddBusy(false);
+    if (result) { setName(""); setRoll(""); setClassId(""); setHostelOrDay(""); setRoomId(""); }
   };
   const submitDelete = (s) => runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
-  const submitEdit = () => {
+  const submitEdit = async () => {
     const isLocal = editing.hostelOrDay === DAY_SCHOLAR_VALUE;
-    runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: isLocal ? null : editing.roomId || null, isLocal } }), "Sent to AO for approval");
-    setEditing(null);
+    setEditBusy(true);
+    const result = await runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: isLocal ? null : editing.roomId || null, isLocal } }), "Sent to AO for approval");
+    setEditBusy(false);
+    if (result) setEditing(null);
   };
 
   const q = search.trim().toLowerCase();
@@ -1938,17 +2000,6 @@ function StudentsAdmin({ state, runAction }) {
   return (
     <div>
       <SectionTitle icon={GraduationCap} title="Students" subtitle="Changes are sent to the AO for approval before they take effect." />
-      <Card className="mb-6 p-4">
-        <p className="mb-3 text-sm font-semibold text-slate-700">Add a student</p>
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label="Roll number"><input className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
-          <Field label="Class / batch"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
-          <HostelOrDayFields state={state} hostelOrDay={hostelOrDay} roomId={roomId} onHostelOrDayChange={(v) => { setHostelOrDay(v); setRoomId(""); }} onRoomChange={setRoomId} />
-        </div>
-        {addError && <p className="mt-3 text-sm text-rose-600">{addError}</p>}
-        <div className="mt-3"><Btn onClick={submitAdd}><Plus size={14} /> Send for AO approval</Btn></div>
-      </Card>
 
       <Card className="mb-6 p-4">
         <p className="mb-1 text-sm font-semibold text-slate-700">Add many at once with Excel</p>
@@ -1979,6 +2030,25 @@ function StudentsAdmin({ state, runAction }) {
           ) : importResult.error ? (
             <p className="mt-3 text-sm text-rose-600">{importResult.error}</p>
           ) : null
+        )}
+      </Card>
+
+      <Card className="mb-6 p-4">
+        <button onClick={() => setShowManualAdd((v) => !v)} className="flex w-full items-center justify-between text-left">
+          <p className="text-sm font-semibold text-slate-700">Add one student without Excel</p>
+          <ChevronDown size={16} className={`shrink-0 text-slate-400 transition-transform ${showManualAdd ? "" : "-rotate-90"}`} />
+        </button>
+        {showManualAdd && (
+          <div className="mt-3">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <Field label="Roll number"><input className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
+              <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+              <Field label="Class / batch"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+              <HostelOrDayFields state={state} hostelOrDay={hostelOrDay} roomId={roomId} onHostelOrDayChange={(v) => { setHostelOrDay(v); setRoomId(""); }} onRoomChange={setRoomId} />
+            </div>
+            {addError && <p className="mt-3 text-sm text-rose-600">{addError}</p>}
+            <div className="mt-3"><Btn onClick={submitAdd} disabled={addBusy}>{addBusy ? <Loader2 className="animate-spin" size={14} /> : <Plus size={14} />} {addBusy ? "Sending..." : "Send for AO approval"}</Btn></div>
+          </div>
         )}
       </Card>
 
@@ -2017,14 +2087,14 @@ function StudentsAdmin({ state, runAction }) {
           <Card className="w-full max-w-md p-5">
             <p className="mb-3 font-display text-base font-semibold text-slate-800">Edit student</p>
             <div className="space-y-3">
-              <Field label="Name"><input className={inputCls} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
               <Field label="Roll number"><input className={inputCls} value={editing.roll} onChange={(e) => setEditing({ ...editing, roll: e.target.value })} /></Field>
+              <Field label="Name"><input className={inputCls} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
               <Field label="Class / batch"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
               <HostelOrDayFields state={state} hostelOrDay={editing.hostelOrDay} roomId={editing.roomId || ""} onHostelOrDayChange={(v) => setEditing({ ...editing, hostelOrDay: v, roomId: "" })} onRoomChange={(v) => setEditing({ ...editing, roomId: v })} />
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <Btn variant="ghost" onClick={() => setEditing(null)}>Cancel</Btn>
-              <Btn onClick={submitEdit}>Send for AO approval</Btn>
+              <Btn variant="ghost" onClick={() => setEditing(null)} disabled={editBusy}>Cancel</Btn>
+              <Btn onClick={submitEdit} disabled={editBusy}>{editBusy ? <Loader2 className="animate-spin" size={14} /> : null} {editBusy ? "Sending..." : "Send for AO approval"}</Btn>
             </div>
           </Card>
         </div>
@@ -2312,7 +2382,7 @@ function StructureAdmin({ state, runAction, editBatch, onDoneEditing }) {
       {isEditing && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <div><span className="font-medium">Editing a batch the AO sent back:</span> {editBatch.reason}</div>
-          <button onClick={onDoneEditing} className="text-xs font-medium text-amber-700 underline underline-offset-2">Cancel edit</button>
+          <button onClick={onDoneEditing} disabled={submitting} className="text-xs font-medium text-amber-700 underline underline-offset-2 disabled:opacity-40">Cancel edit</button>
         </div>
       )}
 
@@ -2351,11 +2421,12 @@ function StructureAdmin({ state, runAction, editBatch, onDoneEditing }) {
         )}
         <div className="ml-auto">
           <ConfirmButton
-            label={submitting ? "Sending..." : isEditing ? "Resend for AO approval" : "Send all for AO approval"}
+            label={isEditing ? "Resend for AO approval" : "Send all for AO approval"}
             confirmLabel="Confirm"
             variant="primary"
             icon={Check}
-            disabled={counts.total === 0 || submitting}
+            disabled={counts.total === 0}
+            busy={submitting}
             onConfirm={submit}
           />
         </div>
@@ -2658,8 +2729,8 @@ function EditStudentChangeModal({ state, change, onClose, runAction }) {
           ))}
         </div>
         <div className="flex justify-end gap-2">
-          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn onClick={submit} disabled={busy || rows.length === 0}>{busy ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />} Resend for AO approval</Btn>
+          <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn onClick={submit} disabled={busy || rows.length === 0}>{busy ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />} {busy ? "Sending..." : "Resend for AO approval"}</Btn>
         </div>
       </div>
     </Modal>

@@ -277,7 +277,7 @@ excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER")
 
   const students = await prisma.student.findMany({
     where: { classId },
-    orderBy: { roll: "asc" },
+    orderBy: { seq: "asc" }, // entry order, not roll — see schema.prisma's comment on Student.seq
     include: { room: { include: { hostelFloor: { include: { hostel: true } } } } },
   });
 

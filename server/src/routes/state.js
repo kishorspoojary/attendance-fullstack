@@ -19,7 +19,9 @@ stateRouter.get("/state", requireAuth, async (req, res) => {
     prisma.hostelRoom.findMany(),
     prisma.collegeFloor.findMany(),
     prisma.classroom.findMany(),
-    prisma.student.findMany(),
+    // seq (not roll) preserves the order students were actually entered in
+    // — see schema.prisma's comment on Student.seq.
+    prisma.student.findMany({ orderBy: { seq: "asc" } }),
     prisma.user.findMany(),
     prisma.pendingChange.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.attendanceRecord.findMany(),

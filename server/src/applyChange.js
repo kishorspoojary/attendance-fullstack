@@ -45,19 +45,26 @@ export async function applyChange(prisma, change) {
     // One Excel upload becomes one PendingChange with an array of rows,
     // rather than one PendingChange per student — otherwise a 200-row
     // spreadsheet would mean 200 separate things for an AO to click through.
-    // createMany preserves p.students' array order in the INSERT's VALUES
-    // list, which is what gives every row its Student.seq in the same order
-    // the Database Manager entered them (see schema.prisma's comment on
-    // Student.seq) — never re-sort this array before this call.
+    // Created ONE AT A TIME, awaited in order — not createMany, and not
+    // Promise.all — so each row's Student.seq is assigned strictly after
+    // the previous row's, by construction. (createMany would very likely
+    // preserve order too, since Postgres evaluates a multi-row VALUES
+    // list's sequence defaults in the order the rows are given — but that
+    // rests on an engine-level guarantee this app doesn't need to lean on
+    // when a plain sequential loop makes the ordering airtight instead, at
+    // the cost of N round trips instead of 1 — fine at the class-roster
+    // sizes this app deals with.) Never reorder p.students before this.
     case "bulk_add_students":
       await prisma.$transaction(async (tx) => {
         await revalidateStudentsForApproval(tx, p.students);
-        await tx.student.createMany({
-          data: p.students.map((s) => ({
-            name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
-            isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
-          })),
-        });
+        for (const s of p.students) {
+          await tx.student.create({
+            data: {
+              name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
+              isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
+            },
+          });
+        }
       });
       break;
 
