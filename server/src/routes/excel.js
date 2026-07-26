@@ -70,6 +70,21 @@ function sanitizeFilenamePart(s) {
 }
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
+// Every existing student, college-wide, as a Map of normalized roll -> the
+// name of the class they're currently in — the shape validateImportRows'
+// existingRollOwners expects. Not scoped to any one class: roll uniqueness
+// is global, so a colliding student may well be in a different class than
+// whichever one is being uploaded to, and that's exactly what the error
+// message needs to say. Shared by the upload route below and
+// routes/changes.js's PUT /changes/:id (the sent-back-batch edit-and-
+// resubmit flow), which both need this same global lookup.
+export async function fetchExistingRollOwners(client) {
+  const students = await client.student.findMany({ include: { class: true } });
+  const owners = new Map();
+  for (const s of students) owners.set(norm(s.roll), s.class?.name || "another class");
+  return owners;
+}
+
 // exceljs's row.values doesn't always hand back a plain string/number for a
 // cell — a formula cell comes back as { formula, result, ... }, rich text
 // as { richText: [{ text }, ...] }, a hyperlink as { text, hyperlink }. The
@@ -364,13 +379,18 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
 });
 
 // The actual per-row rules (section 3 of the spec): required fields, roll
-// uniqueness (within the sheet, and against that class's existing
-// students), the hostel-or-day-scholar choice, and the room/hostel
-// cross-check. Pure — no exceljs or Prisma calls — so it's testable against
-// a plain fixture. `rows` is already-extracted {rowNumber, roll, name,
-// hostelOrDay, roomNo} per row; blank rows should already be filtered out
-// by the caller (a blank row isn't an error, just nothing to validate).
-export function validateImportRows(rows, { classId, className, hostels, hostelFloors, hostelRooms, existingRolls }) {
+// uniqueness (within the sheet, and against EVERY existing student
+// college-wide — not scoped to the class being uploaded to, since roll
+// numbers are unique across the whole institution), the hostel-or-day-
+// scholar choice, and the room/hostel cross-check. Pure — no exceljs or
+// Prisma calls — so it's testable against a plain fixture. `rows` is
+// already-extracted {rowNumber, roll, name, hostelOrDay, roomNo} per row;
+// blank rows should already be filtered out by the caller (a blank row
+// isn't an error, just nothing to validate). `existingRollOwners` is a Map
+// of normalized roll -> the class name of whichever existing student
+// already has it (anywhere in the college), not a Set — the error needs to
+// say WHICH class, since it's often not the one being uploaded to.
+export function validateImportRows(rows, { classId, className, hostels, hostelFloors, hostelRooms, existingRollOwners }) {
   const seenRollsInSheet = new Set();
   const toAdd = [];
   const errors = [];
@@ -384,7 +404,8 @@ export function validateImportRows(rows, { classId, className, hostels, hostelFl
 
     const rollKey = norm(roll);
     if (seenRollsInSheet.has(rollKey)) { errors.push(`${rowLabel}: roll no. "${roll}" is duplicated within this sheet`); continue; }
-    if (existingRolls.has(rollKey)) { errors.push(`${rowLabel}: roll no. "${roll}" already exists in ${className}`); continue; }
+    const existingOwnerClass = existingRollOwners.get(rollKey);
+    if (existingOwnerClass) { errors.push(`${rowLabel}: roll no. "${roll}" already exists (currently in ${existingOwnerClass})`); continue; }
 
     if (!hostelOrDay) { errors.push(`${rowLabel}: choose "Day scholar" or a hostel in column C`); continue; }
 
@@ -412,21 +433,24 @@ export function validateImportRows(rows, { classId, className, hostels, hostelFl
 }
 
 // "Cheap hardening" (per the bug report): catches the common case of two
-// still-pending requests for the same class colliding on roll number
-// before either is even approved, rather than leaving it entirely to
-// studentApproval.js's in-transaction re-check at approval time — that
-// re-check is still the real safety net (this is just a nicer, earlier
-// error), since a THIRD request could always slip in between this check and
-// the eventual approval. Pure — takes already-fetched PendingChange rows,
-// not a Prisma client — for a direct test. excludeChangeId lets the edit
-// route (PUT /changes/:id) skip comparing a batch against itself.
-export function findPendingRollCollision(pendingChanges, classId, roll, excludeChangeId) {
+// still-pending requests colliding on roll number before either is even
+// approved, rather than leaving it entirely to studentApproval.js's
+// in-transaction re-check at approval time — that re-check is still the
+// real safety net (this is just a nicer, earlier error), since a THIRD
+// request could always slip in between this check and the eventual
+// approval. Roll uniqueness is global (college-wide, not per-class), so
+// this matches on roll alone — two pending requests for DIFFERENT classes
+// still collide if they use the same roll number. Pure — takes
+// already-fetched PendingChange rows, not a Prisma client — for a direct
+// test. excludeChangeId lets the edit route (PUT /changes/:id) skip
+// comparing a batch against itself.
+export function findPendingRollCollision(pendingChanges, roll, excludeChangeId) {
   const rollKey = norm(roll);
   for (const c of pendingChanges) {
     if (c.id === excludeChangeId || c.status !== "pending") continue;
-    if (c.type === "add_student" && c.payload?.classId === classId && norm(c.payload?.roll) === rollKey) return c;
+    if (c.type === "add_student" && norm(c.payload?.roll) === rollKey) return c;
     if (c.type === "bulk_add_students" && Array.isArray(c.payload?.students)) {
-      if (c.payload.students.some((s) => s.classId === classId && norm(s.roll) === rollKey)) return c;
+      if (c.payload.students.some((s) => norm(s.roll) === rollKey)) return c;
     }
   }
   return null;
@@ -459,11 +483,11 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     });
   }
 
-  const [hostels, hostelFloors, hostelRooms, existingStudentsInClass] = await Promise.all([
+  const [hostels, hostelFloors, hostelRooms, existingRollOwners] = await Promise.all([
     prisma.hostel.findMany(),
     prisma.hostelFloor.findMany(),
     prisma.hostelRoom.findMany(),
-    prisma.student.findMany({ where: { classId } }),
+    fetchExistingRollOwners(prisma),
   ]);
 
   // sheet.eachRow -> a plain array of {rowNumber, roll, name, hostelOrDay,
@@ -482,8 +506,7 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     });
   });
 
-  const existingRolls = new Set(existingStudentsInClass.map((s) => norm(s.roll)));
-  const { toAdd, errors } = validateImportRows(rawRows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRolls });
+  const { toAdd, errors } = validateImportRows(rawRows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRollOwners });
 
   if (errors.length > 0) {
     return res.status(400).json({ error: `${errors.length} row(s) had problems — nothing was imported.`, errors });
@@ -495,7 +518,7 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
   const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: ["add_student", "bulk_add_students"] } } });
   const pendingCollisionErrors = [];
   for (const s of toAdd) {
-    const collision = findPendingRollCollision(pendingChanges, s.classId, s.roll, null);
+    const collision = findPendingRollCollision(pendingChanges, s.roll, null);
     if (collision) pendingCollisionErrors.push(`Roll no. "${s.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.`);
   }
   if (pendingCollisionErrors.length > 0) {

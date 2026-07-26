@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "seed": "node src/seed.js",
     "report-duplicates": "node src/reportDuplicateStudents.js",
+    "report-global-duplicate-rolls": "node src/reportGlobalDuplicateRolls.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev --name init"

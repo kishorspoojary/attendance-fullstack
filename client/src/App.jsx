@@ -1962,6 +1962,18 @@ function findPendingStudentLock(pendingChanges, studentId) {
   }
   return null;
 }
+// Global (college-wide) duplicate-roll check, mirroring the server's
+// findRollOwner (server/src/studentApproval.js) — roll numbers are unique
+// across the whole college, not scoped to a class, so this checks the
+// FULL state.students list with no classId filter. Used by both the
+// manual Add and Edit forms' client-side pre-checks; returns the class
+// name of whichever student already has that roll, or null.
+function findDuplicateRollOwner(state, roll, excludeStudentId) {
+  const rollKey = roll.trim().toLowerCase();
+  const dup = state.students.find((s) => s.id !== excludeStudentId && s.roll.trim().toLowerCase() === rollKey);
+  if (!dup) return null;
+  return state.classes.find((c) => c.id === dup.classId)?.name || "another class";
+}
 function PendingLockBadge({ lock }) {
   if (!lock) return null;
   return <span className="text-xs font-medium text-amber-600">Pending: {lock.type === "delete_student" ? "delete" : "edit"}</span>;
@@ -1999,6 +2011,7 @@ function StudentsAdmin({ state, runAction }) {
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
   // Student ids with a delete request currently in flight — guards the
   // per-row icons the same way ApprovalActions guards AO's card buttons:
   // the clicked (delete) icon shows a spinner, its sibling (edit) on the
@@ -2038,9 +2051,8 @@ function StudentsAdmin({ state, runAction }) {
       return setAddError("Fill in name, roll number, class, and whether they're a day scholar or hosteller.");
     }
     if (hostelOrDay !== DAY_SCHOLAR_VALUE && !roomId) return setAddError("Choose a room in that hostel.");
-    const rollKey = roll.trim().toLowerCase();
-    const dup = state.students.find((s) => s.classId === classId && s.roll.trim().toLowerCase() === rollKey);
-    if (dup) return setAddError(`Roll number "${roll.trim()}" already exists in this class (${dup.name}).`);
+    const dupClassName = findDuplicateRollOwner(state, roll, null);
+    if (dupClassName) return setAddError(`Roll number "${roll.trim()}" already exists (currently in ${dupClassName}).`);
 
     const isLocal = hostelOrDay === DAY_SCHOLAR_VALUE;
     setAddBusy(true);
@@ -2053,7 +2065,12 @@ function StudentsAdmin({ state, runAction }) {
     await runAction(() => api.proposeChange("delete_student", `Delete student ${s.name} (${s.roll})`, { studentId: s.id }), "Sent to AO for approval");
     setDeletingIds((prev) => { const next = new Set(prev); next.delete(s.id); return next; });
   };
+  const openEdit = (s) => { setEditError(""); setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) }); };
   const submitEdit = async () => {
+    setEditError("");
+    const dupClassName = findDuplicateRollOwner(state, editing.roll, editing.id);
+    if (dupClassName) return setEditError(`Roll number "${editing.roll.trim()}" already exists (currently in ${dupClassName}).`);
+
     const isLocal = editing.hostelOrDay === DAY_SCHOLAR_VALUE;
     setEditBusy(true);
     const result = await runAction(() => api.proposeChange("edit_student", `Edit student ${editing.name}`, { studentId: editing.id, changes: { name: editing.name, roll: editing.roll, classId: editing.classId, roomId: isLocal ? null : editing.roomId || null, isLocal } }), "Sent to AO for approval");
@@ -2181,7 +2198,7 @@ function StudentsAdmin({ state, runAction }) {
                                   lock={lock}
                                   deletingIds={deletingIds}
                                   isEditingBusy={editing?.id === s.id && editBusy}
-                                  onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
+                                  onEdit={() => openEdit(s)}
                                   onDelete={() => submitDelete(s)}
                                 />
                               </div>
@@ -2205,7 +2222,7 @@ function StudentsAdmin({ state, runAction }) {
                             lock={lock}
                             deletingIds={deletingIds}
                             isEditingBusy={editing?.id === s.id && editBusy}
-                            onEdit={() => setEditing({ ...s, hostelOrDay: s.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, s.roomId) })}
+                            onEdit={() => openEdit(s)}
                             onDelete={() => submitDelete(s)}
                           />
                         </div>
@@ -2236,8 +2253,9 @@ function StudentsAdmin({ state, runAction }) {
               <Field label="Class / batch"><Select value={editing.classId} onChange={(v) => setEditing({ ...editing, classId: v })} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
               <HostelOrDayFields state={state} hostelOrDay={editing.hostelOrDay} roomId={editing.roomId || ""} onHostelOrDayChange={(v) => setEditing({ ...editing, hostelOrDay: v, roomId: "" })} onRoomChange={(v) => setEditing({ ...editing, roomId: v })} />
             </div>
+            {editError && <p className="mt-3 text-sm text-rose-600">{editError}</p>}
             <div className="mt-4 flex justify-end gap-2">
-              <Btn variant="ghost" onClick={() => setEditing(null)} disabled={editBusy}>Cancel</Btn>
+              <Btn variant="ghost" onClick={() => { setEditing(null); setEditError(""); }} disabled={editBusy}>Cancel</Btn>
               <Btn onClick={submitEdit} disabled={editBusy}>{editBusy ? <Loader2 className="animate-spin" size={14} /> : null} {editBusy ? "Sending..." : "Send for AO approval"}</Btn>
             </div>
           </Card>

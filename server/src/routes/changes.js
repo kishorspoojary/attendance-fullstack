@@ -8,7 +8,8 @@ import { prisma } from "../db.js";
 import { requireAuth, requireRole, generateLoginKey } from "../auth.js";
 import { applyChange } from "../applyChange.js";
 import { FIELD_STAFF_ROLES } from "../constants.js";
-import { validateImportRows, findPendingRollCollision } from "./excel.js";
+import { validateImportRows, findPendingRollCollision, fetchExistingRollOwners } from "./excel.js";
+import { findRollOwner } from "../studentApproval.js";
 
 export const changesRouter = Router();
 
@@ -66,9 +67,23 @@ changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (re
   // an AO to hit much later.
   if (type === "add_student" && payload?.classId && payload?.roll) {
     const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: SENDBACKABLE_TYPES } } });
-    const collision = findPendingRollCollision(pendingChanges, payload.classId, payload.roll, null);
+    const collision = findPendingRollCollision(pendingChanges, payload.roll, null);
     if (collision) {
       return res.status(409).json({ error: `Roll no. "${payload.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.` });
+    }
+  }
+
+  // The rare "college re-numbers a student's roll" case: the new roll must
+  // be unique college-wide (same global rule as everywhere else), checked
+  // against real Student rows rather than other proposals — edit_student
+  // has no pending-collision concept the way add_student does, since only
+  // one edit/delete can ever be pending for a given student at a time (see
+  // findPendingStudentLock below).
+  if (type === "edit_student" && payload?.studentId && payload?.changes?.roll !== undefined) {
+    const allStudents = await prisma.student.findMany({ include: { class: true } });
+    const owner = findRollOwner(allStudents, payload.changes.roll, payload.studentId);
+    if (owner) {
+      return res.status(409).json({ error: `Roll no. "${payload.changes.roll}" already exists (currently in ${owner}).` });
     }
   }
 
@@ -206,13 +221,12 @@ changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async 
   const cls = classId ? await prisma.classroom.findUnique({ where: { id: classId } }) : null;
   if (!cls) return res.status(400).json({ error: "The original class for this request no longer exists" });
 
-  const [hostels, hostelFloors, hostelRooms, existingStudentsInClass] = await Promise.all([
+  const [hostels, hostelFloors, hostelRooms, existingRollOwners] = await Promise.all([
     prisma.hostel.findMany(),
     prisma.hostelFloor.findMany(),
     prisma.hostelRoom.findMany(),
-    prisma.student.findMany({ where: { classId } }),
+    fetchExistingRollOwners(prisma),
   ]);
-  const existingRolls = new Set(existingStudentsInClass.map((s) => s.roll.trim().toLowerCase()));
 
   const rows = rawRows.map((r, i) => ({
     rowNumber: i + 1,
@@ -221,7 +235,7 @@ changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async 
     hostelOrDay: String(r.hostelOrDay ?? "").trim(),
     roomNo: String(r.roomNo ?? "").trim(),
   }));
-  const { toAdd, errors } = validateImportRows(rows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRolls });
+  const { toAdd, errors } = validateImportRows(rows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRollOwners });
 
   if (errors.length > 0) {
     return res.status(400).json({ error: `${errors.length} row(s) had problems — nothing was saved.`, errors });
@@ -233,7 +247,7 @@ changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async 
   const otherPendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: SENDBACKABLE_TYPES } } });
   const pendingCollisionErrors = [];
   for (const s of toAdd) {
-    const collision = findPendingRollCollision(otherPendingChanges, s.classId, s.roll, change.id);
+    const collision = findPendingRollCollision(otherPendingChanges, s.roll, change.id);
     if (collision) pendingCollisionErrors.push(`Roll no. "${s.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.`);
   }
   if (pendingCollisionErrors.length > 0) {

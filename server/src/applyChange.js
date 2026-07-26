@@ -10,7 +10,7 @@
 import bcrypt from "bcryptjs";
 import { generateTempPassword } from "./auth.js";
 import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
-import { revalidateStudentsForApproval } from "./studentApproval.js";
+import { revalidateStudentsForApproval, revalidateEditForApproval } from "./studentApproval.js";
 
 // Returns undefined for most change types. create_staff is the one
 // exception — it returns { password }, the plaintext temp password for the
@@ -68,16 +68,25 @@ export async function applyChange(prisma, change) {
       });
       break;
 
+    // Re-validated INSIDE the transaction, same reasoning as add_student/
+    // bulk_add_students above — but only the roll actually needs it (see
+    // revalidateEditForApproval): this is the rare "college re-numbers a
+    // student's roll" case, and that new number must still be unique
+    // college-wide by the moment this actually runs, not just when it was
+    // proposed.
     case "edit_student":
-      await prisma.student.update({
-        where: { id: p.studentId },
-        data: {
-          ...(p.changes.name !== undefined && { name: p.changes.name }),
-          ...(p.changes.roll !== undefined && { roll: p.changes.roll }),
-          ...(p.changes.classId !== undefined && { classId: p.changes.classId }),
-          ...(p.changes.roomId !== undefined && { roomId: p.changes.roomId || null }),
-          ...(p.changes.isLocal !== undefined && { isLocal: p.changes.isLocal }),
-        },
+      await prisma.$transaction(async (tx) => {
+        await revalidateEditForApproval(tx, p.studentId, p.changes);
+        await tx.student.update({
+          where: { id: p.studentId },
+          data: {
+            ...(p.changes.name !== undefined && { name: p.changes.name }),
+            ...(p.changes.roll !== undefined && { roll: p.changes.roll }),
+            ...(p.changes.classId !== undefined && { classId: p.changes.classId }),
+            ...(p.changes.roomId !== undefined && { roomId: p.changes.roomId || null }),
+            ...(p.changes.isLocal !== undefined && { isLocal: p.changes.isLocal }),
+          },
+        });
       });
       break;
 

@@ -1,21 +1,38 @@
 // ============================================================================
-// Re-validates an add_student/bulk_add_students payload against the LIVE
-// database from inside the approval transaction — the same "rebuild the
-// plan, re-check against reality, then create" pattern structure_batch uses
-// (see structureBatch.js), applied to student adds.
+// Re-validates add_student/bulk_add_students/edit_student payloads against
+// the LIVE database from inside the approval transaction — the same
+// "rebuild the plan, re-check against reality, then create" pattern
+// structure_batch uses (see structureBatch.js), applied to students.
 //
 // Why this exists: a batch validates cleanly at PROPOSE time against
-// whatever students already exist. But two Excel uploads for the same
-// class, both proposed before either is approved, can each validate fine
-// on their own — each only sees already-APPROVED students, not each
-// other's still-pending rolls. If an AO approves both, the second one's
-// rolls now collide with students the first one just created. Re-running
-// the same roll/class/room checks here, right before the actual create,
-// catches that staleness and aborts the whole transaction instead of
-// creating a duplicate — see applyChange.js's "add_student" and
-// "bulk_add_students" cases.
+// whatever students already exist. But two Excel uploads, both proposed
+// before either is approved, can each validate fine on their own — each
+// only sees already-APPROVED students, not each other's still-pending
+// rolls. If an AO approves both, the second one's rolls now collide with
+// students the first one just created. Re-running the same roll checks
+// here, right before the actual create/update, catches that staleness and
+// aborts the whole transaction instead of creating a duplicate — see
+// applyChange.js's "add_student", "bulk_add_students", and "edit_student"
+// cases.
+//
+// Roll uniqueness is GLOBAL — across the whole college, not scoped to a
+// class — per the institution's confirmed rule: every student has a
+// genuinely unique roll number college-wide, with no per-class exceptions.
 // ============================================================================
 const norm = (s) => String(s ?? "").trim().toLowerCase();
+
+// Pure: does `roll` collide with any OTHER student in `students` (case-
+// insensitive, trimmed), globally? Returns the colliding student's class
+// name (for the error message) or null. Takes already-fetched student rows
+// (each needs its `class` relation included) so the same comparison logic
+// works both as a propose-time dry-run check (against the plain `prisma`
+// client, in routes/changes.js) and inside an approval-time transaction
+// (against `tx`, below) without duplicating it in two places.
+export function findRollOwner(students, roll, excludeStudentId) {
+  const rollKey = norm(roll);
+  const owner = students.find((s) => s.id !== excludeStudentId && norm(s.roll) === rollKey);
+  return owner ? (owner.class?.name || "another class") : null;
+}
 
 // `client` is a transaction client (`tx`) from inside applyChange.js's
 // prisma.$transaction — never the plain top-level `prisma`, so every read
@@ -29,8 +46,8 @@ const norm = (s) => String(s ?? "").trim().toLowerCase();
 export async function revalidateStudentsForApproval(client, students) {
   const classCache = new Map(); // classId -> Classroom | null
   const roomCache = new Map(); // roomId -> HostelRoom | null
-  const existingRollsByClass = new Map(); // classId -> Set(normalized roll)
-  const seenInThisBatch = new Map(); // classId -> Set(normalized roll)
+  const allExisting = await client.student.findMany({ include: { class: true } }); // one global fetch — roll uniqueness has no per-class scope to narrow it by
+  const seenInThisBatch = new Set(); // normalized roll — global across the whole batch, not per-class
 
   for (const s of students) {
     if (!classCache.has(s.classId)) {
@@ -41,25 +58,20 @@ export async function revalidateStudentsForApproval(client, students) {
       throw new Error(`The class for "${s.name}" (roll ${s.roll}) no longer exists — this request is stale. Send it back or reject it.`);
     }
 
-    if (!existingRollsByClass.has(s.classId)) {
-      const existing = await client.student.findMany({ where: { classId: s.classId } });
-      existingRollsByClass.set(s.classId, new Set(existing.map((e) => norm(e.roll))));
-    }
-    if (!seenInThisBatch.has(s.classId)) seenInThisBatch.set(s.classId, new Set());
-
     const rollKey = norm(s.roll);
-    if (existingRollsByClass.get(s.classId).has(rollKey)) {
-      throw new Error(`Roll no. "${s.roll}" now already exists in ${cls.name} — this request is stale. Send it back or reject it.`);
+    const owner = findRollOwner(allExisting, s.roll, null);
+    if (owner) {
+      throw new Error(`Roll no. "${s.roll}" now already exists (currently in ${owner}) — this request is stale. Send it back or reject it.`);
     }
     // Defense-in-depth: propose-time and edit-time validation
     // (validateImportRows) already reject in-batch duplicates, so this
     // should never actually fire — but if it somehow did (a bug in that
     // check, or a payload built some other way), this is the last line
     // before a real duplicate would be created.
-    if (seenInThisBatch.get(s.classId).has(rollKey)) {
+    if (seenInThisBatch.has(rollKey)) {
       throw new Error(`Roll no. "${s.roll}" is duplicated within this request — this shouldn't have passed validation. Send it back or reject it.`);
     }
-    seenInThisBatch.get(s.classId).add(rollKey);
+    seenInThisBatch.add(rollKey);
 
     if (s.roomId) {
       if (!roomCache.has(s.roomId)) {
@@ -69,5 +81,20 @@ export async function revalidateStudentsForApproval(client, students) {
         throw new Error(`The room for "${s.name}" (roll ${s.roll}) no longer exists — this request is stale. Send it back or reject it.`);
       }
     }
+  }
+}
+
+// Re-checks an edit_student change's roll (if the edit actually changes it —
+// every other field on Student has no uniqueness rule to enforce) against
+// the live database, inside the approval transaction. edit_student is the
+// one student-changing type that previously had NO approval-time
+// revalidation at all; this closes that gap using the same global rule as
+// everywhere else.
+export async function revalidateEditForApproval(client, studentId, changes) {
+  if (!changes || changes.roll === undefined) return;
+  const others = await client.student.findMany({ where: { id: { not: studentId } }, include: { class: true } });
+  const owner = findRollOwner(others, changes.roll, null); // already excluded via the query itself
+  if (owner) {
+    throw new Error(`Roll no. "${changes.roll}" now already exists (currently in ${owner}) — this request is stale. Send it back or reject it.`);
   }
 }
