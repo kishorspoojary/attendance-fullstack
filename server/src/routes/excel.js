@@ -166,10 +166,26 @@ function applyHostelDropdown(sheet, listRangeRef) {
   });
 }
 
+// The hidden class-id cell + workbook-level defined name — the one piece
+// every Reference sheet needs, whether or not it also carries the
+// hostel/room lookup table (template only). Split out so the template and
+// the export both go through this exact same code path instead of
+// duplicating the hidden-cell/defined-name logic in two places — the
+// export's earlier bug was precisely that it never called anything that
+// wrote this at all, not that a resave had stripped it.
+function writeClassIdMarker(workbook, ref, cls) {
+  const classIdCell = ref.getCell(CLASS_ID_CELL);
+  classIdCell.value = cls.id;
+  classIdCell.font = { color: { argb: "FFFFFFFF" } }; // white-on-white: a redundant layer even if the hidden-column flag is ever stripped by a resave
+  workbook.definedNames.add(CLASS_ID_RANGE, CLASS_ID_DEFINED_NAME);
+}
+
 // The read-only lookup sheet: a human-readable Hostel/Floor/Room table for
 // people to check column D values against, plus (in hidden columns, never
 // part of that visible table) the exact dropdown source list for column C
 // and the class id itself. Protected so it reads as clearly not-for-editing.
+// Template-only — see addMinimalReferenceSheet for the export's stripped-down
+// equivalent, which needs the class-id marker but not the lookup table.
 async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms, cls) {
   const ref = workbook.addWorksheet(REFERENCE_SHEET);
 
@@ -194,13 +210,23 @@ async function addReferenceSheet(workbook, hostels, hostelFloors, hostelRooms, c
   ref.getCell("F1").value = "Valid entries for Students!C (internal — do not edit)";
   dropdownOptions.forEach((opt, i) => { ref.getCell(`F${i + 2}`).value = opt; });
 
-  const classIdCell = ref.getCell(CLASS_ID_CELL);
-  classIdCell.value = cls.id;
-  classIdCell.font = { color: { argb: "FFFFFFFF" } }; // white-on-white: a redundant layer even if the hidden-column flag is ever stripped by a resave
-  workbook.definedNames.add(CLASS_ID_RANGE, CLASS_ID_DEFINED_NAME);
+  writeClassIdMarker(workbook, ref, cls);
 
   await ref.protect("", { selectLockedCells: true, selectUnlockedCells: true });
   return `'${REFERENCE_SHEET}'!$F$2:$F$${dropdownOptions.length + 1}`;
+}
+
+// The export's equivalent of addReferenceSheet — same hidden class-id
+// marker (so an edited-and-reuploaded export resolves its class exactly
+// like a template does), but deliberately WITHOUT the hostel/room lookup
+// table or the dropdown-source column, which are template-only concerns
+// (an export's column C/D values are already real, current data, not
+// something someone needs a lookup sheet to fill in from scratch).
+async function addMinimalReferenceSheet(workbook, cls) {
+  const ref = workbook.addWorksheet(REFERENCE_SHEET);
+  ref.columns = [{}, {}, {}, {}, {}, {}, {}, { width: 20, hidden: true }]; // only column H (the class-id cell) needs a real column property
+  writeClassIdMarker(workbook, ref, cls);
+  await ref.protect("", { selectLockedCells: true, selectUnlockedCells: true });
 }
 
 // Reads the class id back out of an uploaded workbook. Primary: the
@@ -241,7 +267,7 @@ export async function buildStudentTemplateWorkbook({ cls, hostels, hostelFloors,
   return workbook;
 }
 
-export function buildStudentExportWorkbook({ cls, students }) {
+export async function buildStudentExportWorkbook({ cls, students }) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Students");
   writeStudentsSheetHeader(sheet, cls);
@@ -250,6 +276,9 @@ export function buildStudentExportWorkbook({ cls, students }) {
     const row = sheet.getRow(FIRST_DATA_ROW + i);
     [s.roll, s.name, hostelName || DAY_SCHOLAR, s.room?.roomNo || ""].forEach((v, j) => { row.getCell(j + 1).value = v; });
   });
+
+  await addMinimalReferenceSheet(workbook, cls);
+
   return workbook;
 }
 
@@ -281,7 +310,7 @@ excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER")
     include: { room: { include: { hostelFloor: { include: { hostel: true } } } } },
   });
 
-  const workbook = buildStudentExportWorkbook({ cls, students });
+  const workbook = await buildStudentExportWorkbook({ cls, students });
   await sendWorkbook(res, workbook, `vigil_students_${sanitizeFilenamePart(cls.name)}_export.xlsx`);
 });
 
