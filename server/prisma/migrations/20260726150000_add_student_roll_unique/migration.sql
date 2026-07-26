@@ -1,0 +1,12 @@
+-- CreateIndex
+-- Roll numbers are globally unique across the whole college (confirmed
+-- institution rule, no per-class exceptions) — this is the database-level
+-- safety net UNDER the application-level checks (studentApproval.js's
+-- findRollOwner and every caller of it), not a replacement for them.
+-- Safe to apply: server/src/reportGlobalDuplicateRolls.js was run against
+-- the live database immediately before this migration was written and
+-- found zero existing roll collisions of any kind (including case-only),
+-- so this ADD CONSTRAINT cannot fail on current data. Case-sensitive at
+-- this layer — see schema.prisma's comment on Student.roll for why a
+-- straight unique index is enough here rather than a normalized column.
+CREATE UNIQUE INDEX "Student_roll_key" ON "Student"("roll");

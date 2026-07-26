@@ -143,7 +143,20 @@ model Student {
   // every row created from here on is correctly ordered.
   seq     Int         @default(autoincrement())
   name    String
-  roll    String
+  // Globally unique across the whole college (confirmed institution rule —
+  // no per-class exceptions), enforced here as the safety net UNDER the
+  // application-level checks (studentApproval.js's findRollOwner and every
+  // caller of it), not instead of them: this constraint is case-sensitive
+  // (a straight @unique — server/src/reportGlobalDuplicateRolls.js found
+  // zero existing collisions of any kind, including case-only, so there was
+  // no real data forcing a normalized-column approach), while the
+  // application-level checks are case-insensitive and trimmed. A duplicate
+  // that differs only by letter case would still be caught in virtually
+  // every real scenario by the application checks; this constraint's job is
+  // catching a write that skipped them entirely (a future code path bug, or
+  // two concurrent approvals racing past both checks at once), not that
+  // narrower case-only race — see the migration this comment ships with.
+  roll    String      @unique
   classId String
   class   Classroom   @relation(fields: [classId], references: [id])
   roomId  String? // null means "day scholar" — no hostel room

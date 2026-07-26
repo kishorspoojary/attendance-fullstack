@@ -12,6 +12,32 @@ import { generateTempPassword } from "./auth.js";
 import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
 import { revalidateStudentsForApproval, revalidateEditForApproval } from "./studentApproval.js";
 
+// The re-validation above (revalidateStudentsForApproval /
+// revalidateEditForApproval) is the primary defense, but it reads, then
+// writes, in two separate steps — two concurrent approvals can both pass
+// that read before either has written, then both attempt the write. That's
+// exactly what Student.roll's database-level UNIQUE constraint (see the
+// migration that added it) exists to catch. Without this, a real
+// duplicate-roll race would surface as Prisma's raw "Unique constraint
+// failed on the fields: (`roll`)" — technically correct, useless to an AO.
+// Translates it into the same clear, actionable message the revalidation
+// helpers already use elsewhere in this file.
+export function isRollUniqueViolation(e) {
+  if (e?.code !== "P2002") return false;
+  const target = e.meta?.target;
+  return Array.isArray(target) ? target.includes("roll") : String(target || "").toLowerCase().includes("roll");
+}
+async function withRollConstraintHandling(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isRollUniqueViolation(e)) {
+      throw new Error("A roll number in this request now collides with another student — this request is stale. Send it back or reject it.");
+    }
+    throw e;
+  }
+}
+
 // Returns undefined for most change types. create_staff is the one
 // exception — it returns { password }, the plaintext temp password for the
 // account it just created, generated here at approval time (not earlier,
@@ -31,14 +57,14 @@ export async function applyChange(prisma, change) {
     case "add_student":
       await prisma.$transaction(async (tx) => {
         await revalidateStudentsForApproval(tx, [p]);
-        await tx.student.create({
+        await withRollConstraintHandling(() => tx.student.create({
           data: {
             name: p.name, roll: p.roll, classId: p.classId, roomId: p.roomId || null,
             // Explicit tag wins if the Database Manager set one; otherwise
             // infer it from whether a hostel room was given.
             isLocal: p.isLocal !== undefined ? p.isLocal : !p.roomId,
           },
-        });
+        }));
       });
       break;
 
@@ -58,12 +84,12 @@ export async function applyChange(prisma, change) {
       await prisma.$transaction(async (tx) => {
         await revalidateStudentsForApproval(tx, p.students);
         for (const s of p.students) {
-          await tx.student.create({
+          await withRollConstraintHandling(() => tx.student.create({
             data: {
               name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null,
               isLocal: s.isLocal !== undefined ? s.isLocal : !s.roomId,
             },
-          });
+          }));
         }
       });
       break;
@@ -77,7 +103,7 @@ export async function applyChange(prisma, change) {
     case "edit_student":
       await prisma.$transaction(async (tx) => {
         await revalidateEditForApproval(tx, p.studentId, p.changes);
-        await tx.student.update({
+        await withRollConstraintHandling(() => tx.student.update({
           where: { id: p.studentId },
           data: {
             ...(p.changes.name !== undefined && { name: p.changes.name }),
@@ -86,7 +112,7 @@ export async function applyChange(prisma, change) {
             ...(p.changes.roomId !== undefined && { roomId: p.changes.roomId || null }),
             ...(p.changes.isLocal !== undefined && { isLocal: p.changes.isLocal }),
           },
-        });
+        }));
       });
       break;
 
