@@ -60,10 +60,14 @@ async function downloadFile(path, filename) {
 // File upload needs multipart/form-data, which is a completely different
 // request shape than every other call in this file — no JSON body, and the
 // browser sets the Content-Type (with the right boundary) itself as long as
-// we don't set one ourselves.
-async function uploadFile(path, file) {
+// we don't set one ourselves. `fields` are extra plain multipart fields
+// alongside the file (e.g. the roster sync's confirm=true resend, after the
+// Database Manager reviews the removals a first upload came back asking
+// about — see importStudents below).
+async function uploadFile(path, file, fields) {
   const formData = new FormData();
   formData.append("file", file);
+  if (fields) for (const [k, v] of Object.entries(fields)) formData.append(k, v);
   const res = await fetch(`${BASE}/api${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${getToken()}` },
@@ -132,7 +136,11 @@ export const api = {
   // ---- Excel template / import / export (Database Manager only) ----
   downloadStudentTemplate: (classId, className) => downloadFile(`/excel/students/template?classId=${encodeURIComponent(classId)}`, `vigil_students_${sanitizeFilenamePart(className)}.xlsx`),
   exportStudents: (classId, className) => downloadFile(`/excel/students/export?classId=${encodeURIComponent(classId)}`, `vigil_students_${sanitizeFilenamePart(className)}_export.xlsx`),
-  importStudents: (file) => uploadFile("/excel/students/import", file),
+  // A roster sync: first call (confirm omitted) may come back
+  // {needsConfirmation, diff} instead of creating anything, if the diff
+  // includes removals — see routes/excel.js. Re-call with confirm=true
+  // (same file) to actually create the sync_class_students PendingChange.
+  importStudents: (file, confirm) => uploadFile("/excel/students/import", file, confirm ? { confirm: "true" } : undefined),
   exportAbsentees: (date) => downloadFile(`/excel/absentees/export?date=${date}`, `absentees-${date}.xlsx`),
 
   // ---- Local token storage ----

@@ -13,30 +13,45 @@ import { findRollOwner } from "../studentApproval.js";
 
 export const changesRouter = Router();
 
-// The two change types send-back/edit apply to here — everything else
-// (add_hostel, assign_*, create_staff, ...) only ever gets a flat
-// approve/reject, same as before. structure_batch has its own parallel
-// send-back/edit pair at /structure/batch/:id/... (see routes/structure.js)
-// since it already had dedicated routes; these two follow the exact same
-// pattern for student adds instead of bolting onto that structure-specific
-// path.
-const SENDBACKABLE_TYPES = ["add_student", "bulk_add_students"];
+// Change types that get send-back-with-reason instead of a flat
+// approve/reject — everything else (add_hostel, assign_*, create_staff,
+// ...) only ever gets approve/reject, same as before. structure_batch has
+// its own parallel send-back/edit pair at /structure/batch/:id/... (see
+// routes/structure.js) since it already had dedicated routes.
+//
+// Send-back and in-place editing are two SEPARATE capabilities here, not
+// one: every type below can be sent back, but only IN_PLACE_EDITABLE_TYPES
+// can be fixed via PUT /changes/:id. sync_class_students deliberately
+// isn't in the latter — its payload (adds/edits/removals/order) has
+// nothing in common with the flat {roll, name, hostelOrDay, roomNo} row
+// shape that route's editor works with, and building a second in-place
+// editor just for syncs would be substantial added complexity for a
+// workflow that's already built around "edit the Excel file": a sent-back
+// sync is meant to be fixed by downloading a fresh export and re-uploading
+// it, not edited in the browser — see MyChanges in client/src/App.jsx.
+const SENDBACKABLE_TYPES = ["add_student", "bulk_add_students", "sync_class_students"];
+const IN_PLACE_EDITABLE_TYPES = ["add_student", "bulk_add_students"];
 
 // A student can have at most one UNRESOLVED (pending or sent_back — a
 // sent_back edit/delete is still awaiting the Database Manager's fix, not
-// done) edit or delete outstanding at a time. "Resolved" (approved/rejected)
-// changes don't count — they're history, not a lock. Pure — takes
-// already-fetched PendingChange rows — for a direct test; mirrors
-// findPendingRollCollision's propose-time-hardening pattern in
-// routes/excel.js, keyed on which student a change targets rather than
-// which roll number.
+// done) change outstanding at a time — an edit_student/delete_student
+// targeting them directly, OR a pending sync_class_students whose edits/
+// removals reference them (adds don't, since those rows aren't existing
+// students). "Resolved" (approved/rejected) changes don't count — they're
+// history, not a lock. Pure — takes already-fetched PendingChange rows —
+// for a direct test; mirrors findPendingRollCollision's propose-time-
+// hardening pattern in routes/excel.js, keyed on which student a change
+// targets rather than which roll number.
 const STUDENT_LOCK_TYPES = ["edit_student", "delete_student"];
 export function findPendingStudentLock(pendingChanges, studentId, excludeChangeId) {
   for (const c of pendingChanges) {
     if (c.id === excludeChangeId) continue;
-    if (!STUDENT_LOCK_TYPES.includes(c.type)) continue;
     if (c.status !== "pending" && c.status !== "sent_back") continue;
-    if (c.payload?.studentId === studentId) return c;
+    if (STUDENT_LOCK_TYPES.includes(c.type) && c.payload?.studentId === studentId) return c;
+    if (c.type === "sync_class_students") {
+      if (c.payload?.edits?.some((e) => e.studentId === studentId)) return c;
+      if (c.payload?.removals?.some((r) => r.studentId === studentId)) return c;
+    }
   }
   return null;
 }
@@ -93,7 +108,7 @@ changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (re
   // the real window that matters is the entire time a change sits pending
   // awaiting an AO's decision, which can be minutes, hours, or days.
   if ((type === "edit_student" || type === "delete_student") && payload?.studentId) {
-    const pendingChanges = await prisma.pendingChange.findMany({ where: { status: { in: ["pending", "sent_back"] }, type: { in: STUDENT_LOCK_TYPES } } });
+    const pendingChanges = await prisma.pendingChange.findMany({ where: { status: { in: ["pending", "sent_back"] }, type: { in: [...STUDENT_LOCK_TYPES, "sync_class_students"] } } });
     const lock = findPendingStudentLock(pendingChanges, payload.studentId, null);
     if (lock) {
       return res.status(409).json({ error: "A request for this student is already pending AO approval." });
@@ -203,7 +218,7 @@ export function buildEditedChangePayload(type, toAdd, className) {
 changesRouter.put("/changes/:id", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
   const change = await prisma.pendingChange.findUnique({ where: { id: req.params.id } });
   if (!change) return res.status(404).json({ error: "Change not found" });
-  if (!SENDBACKABLE_TYPES.includes(change.type)) {
+  if (!IN_PLACE_EDITABLE_TYPES.includes(change.type)) {
     return res.status(400).json({ error: "This type of request can't be edited here" });
   }
   if (change.requestedById !== req.user.id) return res.status(403).json({ error: "You can only edit your own requests" });

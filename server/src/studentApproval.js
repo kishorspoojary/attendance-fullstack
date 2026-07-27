@@ -98,3 +98,40 @@ export async function revalidateEditForApproval(client, studentId, changes) {
     throw new Error(`Roll no. "${changes.roll}" now already exists (currently in ${owner}) — this request is stale. Send it back or reject it.`);
   }
 }
+
+// Re-validates a sync_class_students change's edits — {studentId, roll,
+// roomId, isLocal, ...} rows produced by routes/excel.js's
+// diffAndValidateRoster — inside the approval transaction: the target
+// student must still exist, and if the edit points at a room, that room
+// must still exist too. Edits never change roll (roll is the diff's
+// matching key — see diffAndValidateRoster), so there's no roll-uniqueness
+// check to repeat here the way there is for adds/edit_student.
+export async function revalidateSyncEditsForApproval(client, edits) {
+  const roomCache = new Map();
+  for (const e of edits) {
+    const student = await client.student.findUnique({ where: { id: e.studentId } });
+    if (!student) {
+      throw new Error(`A student in this sync (roll ${e.roll}) no longer exists — this request is stale. Send it back or reject it.`);
+    }
+    if (e.roomId) {
+      if (!roomCache.has(e.roomId)) {
+        roomCache.set(e.roomId, await client.hostelRoom.findUnique({ where: { id: e.roomId } }));
+      }
+      if (!roomCache.get(e.roomId)) {
+        throw new Error(`The room for roll ${e.roll} no longer exists — this request is stale. Send it back or reject it.`);
+      }
+    }
+  }
+}
+
+// Re-validates a sync_class_students change's removals — {studentId, roll,
+// name} rows — inside the approval transaction: every target must still
+// exist (an earlier, unrelated change could already have removed one).
+export async function revalidateSyncRemovalsForApproval(client, removals) {
+  for (const r of removals) {
+    const student = await client.student.findUnique({ where: { id: r.studentId } });
+    if (!student) {
+      throw new Error(`A student to be removed (roll ${r.roll}) no longer exists — already deleted. This request is stale. Send it back or reject it.`);
+    }
+  }
+}

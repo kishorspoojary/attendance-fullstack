@@ -10,7 +10,9 @@
 import bcrypt from "bcryptjs";
 import { generateTempPassword } from "./auth.js";
 import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
-import { revalidateStudentsForApproval, revalidateEditForApproval } from "./studentApproval.js";
+import { revalidateStudentsForApproval, revalidateEditForApproval, revalidateSyncEditsForApproval, revalidateSyncRemovalsForApproval } from "./studentApproval.js";
+
+const norm = (s) => String(s ?? "").trim().toLowerCase();
 
 // The re-validation above (revalidateStudentsForApproval /
 // revalidateEditForApproval) is the primary defense, but it reads, then
@@ -128,6 +130,62 @@ export async function applyChange(prisma, change) {
         const student = await tx.student.findUnique({ where: { id: p.studentId } });
         if (!student) throw new Error("This student no longer exists — likely already deleted by an earlier request.");
         await tx.student.delete({ where: { id: p.studentId } });
+      });
+      break;
+
+    // An Excel roster upload synced against the class as {adds, edits,
+    // removals, order} — see routes/excel.js's diffAndValidateRoster. Every
+    // piece is re-validated inside the transaction (class still exists,
+    // adds' rolls still globally unique and their rooms still exist —
+    // reusing revalidateStudentsForApproval exactly as add_student/
+    // bulk_add_students do, since a sync's `adds` are shaped identically —
+    // edit targets and rooms still exist, removal targets still exist), so
+    // a batch that went stale between propose and approve rolls back
+    // entirely instead of partially applying. Order: removals first, then
+    // edits, then adds — irrelevant to correctness (Student.roll's global
+    // uniqueness and Student.seq's per-class renumbering below don't care
+    // which happens first), but removing before creating means a roll a
+    // Database Manager freed up by deleting one row and reused on a new row
+    // in the same sheet never has to coexist even instantaneously. The
+    // final pass renumbers EVERY student in the class to match the sheet's
+    // row order (payload.order — a plain 1..N reassignment; see
+    // schema.prisma's comment on Student.seq for why it only needs to be
+    // ordered, not globally continuous), so the roster's on-screen order
+    // always matches what was just uploaded, additions and removals included.
+    case "sync_class_students":
+      await prisma.$transaction(async (tx) => {
+        const cls = await tx.classroom.findUnique({ where: { id: p.classId } });
+        if (!cls) throw new Error("This class no longer exists — this request is stale. Send it back or reject it.");
+
+        await revalidateStudentsForApproval(tx, p.adds);
+        await revalidateSyncEditsForApproval(tx, p.edits);
+        await revalidateSyncRemovalsForApproval(tx, p.removals);
+
+        for (const r of p.removals) {
+          await tx.student.delete({ where: { id: r.studentId } });
+        }
+        for (const e of p.edits) {
+          await tx.student.update({
+            where: { id: e.studentId },
+            data: { name: e.name, roomId: e.roomId || null, isLocal: e.isLocal },
+          });
+        }
+        for (const s of p.adds) {
+          await withRollConstraintHandling(() => tx.student.create({
+            data: { name: s.name, roll: s.roll, classId: s.classId, roomId: s.roomId || null, isLocal: s.isLocal },
+          }));
+        }
+
+        const classStudentsNow = await tx.student.findMany({ where: { classId: p.classId } });
+        const idByRoll = new Map(classStudentsNow.map((s) => [norm(s.roll), s.id]));
+        let seq = 1;
+        for (const roll of p.order) {
+          const id = idByRoll.get(norm(roll));
+          if (id) {
+            await tx.student.update({ where: { id }, data: { seq } });
+            seq++;
+          }
+        }
       });
       break;
 

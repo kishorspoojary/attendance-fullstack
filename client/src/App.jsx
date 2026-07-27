@@ -1953,12 +1953,19 @@ function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, on
 // resets the instant the request settles, well before an AO ever acts on
 // it, which is exactly how 123a17c's deletingIds-only guard still let a
 // second delete through once a refetch had already come back.
+// A pending/sent_back sync_class_students change (see routes/excel.js's
+// diffAndValidateRoster) also locks any student its edits or removals
+// reference — adds don't count, since those rows aren't existing students
+// yet. Mirrors routes/changes.js's server-side findPendingStudentLock.
 const STUDENT_LOCK_TYPES = ["edit_student", "delete_student"];
 function findPendingStudentLock(pendingChanges, studentId) {
   for (const c of pendingChanges) {
-    if (!STUDENT_LOCK_TYPES.includes(c.type)) continue;
     if (c.status !== "pending" && c.status !== "sent_back") continue;
-    if (c.payload?.studentId === studentId) return c;
+    if (STUDENT_LOCK_TYPES.includes(c.type) && c.payload?.studentId === studentId) return c;
+    if (c.type === "sync_class_students") {
+      if (c.payload?.edits?.some((e) => e.studentId === studentId)) return c;
+      if (c.payload?.removals?.some((r) => r.studentId === studentId)) return c;
+    }
   }
   return null;
 }
@@ -1974,9 +1981,19 @@ function findDuplicateRollOwner(state, roll, excludeStudentId) {
   if (!dup) return null;
   return state.classes.find((c) => c.id === dup.classId)?.name || "another class";
 }
-function PendingLockBadge({ lock }) {
+function describePendingStudentLock(lock, studentId) {
   if (!lock) return null;
-  return <span className="text-xs font-medium text-amber-600">Pending: {lock.type === "delete_student" ? "delete" : "edit"}</span>;
+  if (lock.type === "delete_student") return "delete";
+  if (lock.type === "edit_student") return "edit";
+  if (lock.type === "sync_class_students") {
+    return lock.payload?.removals?.some((r) => r.studentId === studentId) ? "sync removal" : "sync edit";
+  }
+  return "edit";
+}
+function PendingLockBadge({ lock, studentId }) {
+  const label = describePendingStudentLock(lock, studentId);
+  if (!label) return null;
+  return <span className="text-xs font-medium text-amber-600">Pending: {label}</span>;
 }
 
 // The edit/delete icon pair for one Manage Students row. `lock` (a
@@ -2187,7 +2204,7 @@ function StudentsAdmin({ state, runAction }) {
                             <td className="px-4 py-2 text-slate-600">{s.roll}</td>
                             <td className="px-4 py-2">
                               <div className="font-medium text-slate-800">{s.name}</div>
-                              <PendingLockBadge lock={lock} />
+                              <PendingLockBadge lock={lock} studentId={s.id} />
                             </td>
                             <td className="px-4 py-2"><Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge></td>
                             <td className="px-4 py-2 text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</td>
@@ -2231,7 +2248,7 @@ function StudentsAdmin({ state, runAction }) {
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <Badge tone={s.isLocal ? "amber" : "slate"}>{s.isLocal ? "Local" : "Hostel"}</Badge>
                         <span className="text-xs text-slate-500">{s.roomId ? roomLabel(state, s.roomId) : "—"}</span>
-                        <PendingLockBadge lock={lock} />
+                        <PendingLockBadge lock={lock} studentId={s.id} />
                       </div>
                     </div>
                     );

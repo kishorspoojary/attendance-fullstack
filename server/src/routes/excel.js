@@ -452,19 +452,151 @@ export function findPendingRollCollision(pendingChanges, roll, excludeChangeId) 
     if (c.type === "bulk_add_students" && Array.isArray(c.payload?.students)) {
       if (c.payload.students.some((s) => norm(s.roll) === rollKey)) return c;
     }
+    // A sync's `adds` are shaped exactly like bulk_add_students' `students` —
+    // both are validateImportRows' toAdd output — so the same check applies.
+    if (c.type === "sync_class_students" && Array.isArray(c.payload?.adds)) {
+      if (c.payload.adds.some((s) => norm(s.roll) === rollKey)) return c;
+    }
   }
   return null;
+}
+
+// A student's CURRENT hostel/room, as the same {hostelOrDay, roomNo} display
+// strings a sheet row uses — so diffAndValidateRoster can compare "what the
+// sheet says" against "what's actually in the database" with one equality
+// check per field, canonical-vs-canonical (never raw sheet text against a
+// resolved name, which would false-positive on case/whitespace alone).
+function resolveStudentHostelRoom(student, hostels, hostelFloors, hostelRooms) {
+  if (student.isLocal || !student.roomId) return { hostelOrDay: DAY_SCHOLAR, roomNo: "" };
+  const room = hostelRooms.find((r) => r.id === student.roomId);
+  const floor = room && hostelFloors.find((f) => f.id === room.hostelFloorId);
+  const hostel = floor && hostels.find((h) => h.id === floor.hostelId);
+  return { hostelOrDay: hostel?.name || "?", roomNo: room?.roomNo || "" };
+}
+
+// The SYNC counterpart to validateImportRows: instead of every row needing
+// to be a brand-new student (rejecting any roll that already exists), a row
+// whose roll matches a student ALREADY IN THIS CLASS is a "keep" (and an
+// "edit" if any field differs), a roll that exists nowhere is an "add", a
+// roll that belongs to a DIFFERENT class is a row-level error (roster
+// uploads don't move students between classes — see the Move-feature
+// message below), and any of THIS CLASS's current students whose roll never
+// appears in the sheet is a "removal". `order` is every row's roll in sheet
+// sequence (adds + kept/edited, never removals) — what Student.seq gets
+// renumbered to on approval, so the roster's on-screen order always matches
+// the sheet's row order. Pure — no exceljs or Prisma calls — for a direct
+// test, same reasoning as validateImportRows.
+export function diffAndValidateRoster(rows, { classId, className, hostels, hostelFloors, hostelRooms, existingStudentsInClass, existingRollOwners }) {
+  const existingByRoll = new Map(existingStudentsInClass.map((s) => [norm(s.roll), s]));
+  const seenRollsInSheet = new Set();
+  const errors = [];
+  const adds = [];
+  const edits = [];
+  const order = [];
+
+  for (const { rowNumber, roll, name, hostelOrDay, roomNo } of rows) {
+    if (!roll && !name && !hostelOrDay && !roomNo) continue; // fully blank row, ignore silently
+    if (norm(roll) === "example") continue; // the untouched example row, ignore silently
+
+    const rowLabel = `Row ${rowNumber}`;
+    if (!roll || !name) { errors.push(`${rowLabel}: roll no. and name are both required`); continue; }
+
+    const rollKey = norm(roll);
+    if (seenRollsInSheet.has(rollKey)) { errors.push(`${rowLabel}: roll no. "${roll}" is duplicated within this sheet`); continue; }
+
+    if (!hostelOrDay) { errors.push(`${rowLabel}: choose "Day scholar" or a hostel in column C`); continue; }
+
+    let roomId = null;
+    let isLocal;
+    let canonicalHostelOrDay;
+    let canonicalRoomNo;
+    if (norm(hostelOrDay) === norm(DAY_SCHOLAR)) {
+      isLocal = true;
+      canonicalHostelOrDay = DAY_SCHOLAR;
+      canonicalRoomNo = "";
+      if (roomNo) { errors.push(`${rowLabel}: room must be left empty for a day scholar`); continue; }
+    } else {
+      const hostel = hostels.find((h) => norm(h.name) === norm(hostelOrDay));
+      if (!hostel) { errors.push(`${rowLabel}: "${hostelOrDay}" isn't "Day scholar" or an approved hostel name`); continue; }
+      isLocal = false;
+      canonicalHostelOrDay = hostel.name;
+      if (!roomNo) { errors.push(`${rowLabel}: room is required for a hostel student`); continue; }
+      const floorsOfHostel = hostelFloors.filter((f) => f.hostelId === hostel.id);
+      const room = hostelRooms.find((r) => floorsOfHostel.some((f) => f.id === r.hostelFloorId) && norm(r.roomNo) === norm(roomNo));
+      if (!room) { errors.push(`${rowLabel}: room "${roomNo}" not found in ${hostel.name}`); continue; }
+      roomId = room.id;
+      canonicalRoomNo = room.roomNo;
+    }
+
+    seenRollsInSheet.add(rollKey);
+
+    const existing = existingByRoll.get(rollKey);
+    if (existing) {
+      order.push(roll);
+      const old = resolveStudentHostelRoom(existing, hostels, hostelFloors, hostelRooms);
+      const changes = {};
+      if (existing.name !== name) changes.name = { old: existing.name, new: name };
+      if (old.hostelOrDay !== canonicalHostelOrDay) changes.hostelOrDay = { old: old.hostelOrDay, new: canonicalHostelOrDay };
+      if (old.roomNo !== canonicalRoomNo) changes.room = { old: old.roomNo || "—", new: canonicalRoomNo || "—" };
+      if (Object.keys(changes).length > 0) {
+        edits.push({ studentId: existing.id, roll, name, roomId, isLocal, changes });
+      }
+      continue;
+    }
+
+    const otherClassName = existingRollOwners.get(rollKey);
+    if (otherClassName) {
+      errors.push(`${rowLabel}: roll "${roll}" belongs to a student in ${otherClassName}. To move students between classes, use the Move feature (coming soon) — a roster upload only manages this class.`);
+      continue;
+    }
+
+    order.push(roll);
+    adds.push({ name, roll, classId, roomId, isLocal });
+  }
+
+  const removals = existingStudentsInClass
+    .filter((s) => !seenRollsInSheet.has(norm(s.roll)))
+    .map((s) => ({ studentId: s.id, roll: s.roll, name: s.name }));
+
+  const currentOrder = existingStudentsInClass.slice().sort((a, b) => a.seq - b.seq).map((s) => s.roll);
+  const orderChanged = order.length !== currentOrder.length || order.some((roll, i) => norm(roll) !== norm(currentOrder[i]));
+
+  return { errors, adds, edits, removals, order, orderChanged };
+}
+
+// The human-readable summary shown on the AO's card and in My Requests —
+// only mentions the parts that actually changed, always ends with the
+// resulting total so both sides can sanity-check the count at a glance.
+export function buildSyncSummary(className, { adds, edits, removals, orderChanged }, totalAfter) {
+  const parts = [];
+  if (adds.length > 0) parts.push(`${adds.length} added`);
+  if (removals.length > 0) parts.push(`${removals.length} removed`);
+  if (edits.length > 0) parts.push(`${edits.length} edited`);
+  if (orderChanged) parts.push("order updated");
+  const partsText = parts.length > 0 ? parts.join(", ") : "no changes";
+  return `Sync ${className}: ${partsText} (${totalAfter} student${totalAfter === 1 ? "" : "s"} total)`;
 }
 
 // Reads an uploaded per-class sheet (see addReferenceSheet/
 // readClassIdFromWorkbook above — the class is baked into a hidden cell on
 // the Reference sheet, never a Students-sheet column, and never inferred
-// from the filename), validates every row, and — only if every row is
-// clean — creates one PendingChange for an AO to approve. Any row with a
-// problem rejects the whole file; nothing is partially imported, same
-// all-or-nothing philosophy as the structure batch (see structureBatch.js).
+// from the filename) and SYNCS the class to match it: adds rows that are
+// new, edits rows whose roll matches an existing student in this class but
+// whose other fields differ, and removes existing students of this class
+// whose roll no longer appears anywhere in the sheet. A first-time upload
+// against an empty class is just the special case where every row is an
+// add and nothing is removed — no separate code path needed (see
+// diffAndValidateRoster). Any row with a problem rejects the whole file;
+// nothing is partially imported, same all-or-nothing philosophy as the
+// structure batch (see structureBatch.js). Because removals are
+// destructive, a diff that includes any is NOT applied on the first
+// request — it comes back as {needsConfirmation, diff} instead, and only
+// a second request with confirm=true (the same file, re-sent after the
+// Database Manager reviews exactly who'd be removed) actually creates the
+// PendingChange.
 excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"), upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const confirmed = req.body?.confirm === "true"; // multer parses non-file multipart fields as strings
 
   const workbook = new ExcelJS.Workbook();
   try {
@@ -483,11 +615,12 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     });
   }
 
-  const [hostels, hostelFloors, hostelRooms, existingRollOwners] = await Promise.all([
+  const [hostels, hostelFloors, hostelRooms, existingRollOwners, existingStudentsInClass] = await Promise.all([
     prisma.hostel.findMany(),
     prisma.hostelFloor.findMany(),
     prisma.hostelRoom.findMany(),
     fetchExistingRollOwners(prisma),
+    prisma.student.findMany({ where: { classId } }),
   ]);
 
   // sheet.eachRow -> a plain array of {rowNumber, roll, name, hostelOrDay,
@@ -506,18 +639,17 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     });
   });
 
-  const { toAdd, errors } = validateImportRows(rawRows, { classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingRollOwners });
+  const { errors, adds, edits, removals, order, orderChanged } = diffAndValidateRoster(rawRows, {
+    classId, className: cls.name, hostels, hostelFloors, hostelRooms, existingStudentsInClass, existingRollOwners,
+  });
 
   if (errors.length > 0) {
     return res.status(400).json({ error: `${errors.length} row(s) had problems — nothing was imported.`, errors });
   }
-  if (toAdd.length === 0) {
-    return res.status(400).json({ error: "No student rows found in the sheet." });
-  }
 
-  const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: ["add_student", "bulk_add_students"] } } });
+  const pendingChanges = await prisma.pendingChange.findMany({ where: { status: "pending", type: { in: ["add_student", "bulk_add_students", "sync_class_students"] } } });
   const pendingCollisionErrors = [];
-  for (const s of toAdd) {
+  for (const s of adds) {
     const collision = findPendingRollCollision(pendingChanges, s.roll, null);
     if (collision) pendingCollisionErrors.push(`Roll no. "${s.roll}" is already used in another pending request ("${collision.summary}") awaiting AO approval.`);
   }
@@ -525,17 +657,30 @@ excelRouter.post("/excel/students/import", requireAuth, requireRole("DB_MANAGER"
     return res.status(400).json({ error: `${pendingCollisionErrors.length} row(s) collide with other pending requests — nothing was imported.`, errors: pendingCollisionErrors });
   }
 
-  const hostellerCount = toAdd.filter((s) => !s.isLocal).length;
-  const dayScholarCount = toAdd.length - hostellerCount;
+  if (adds.length === 0 && edits.length === 0 && removals.length === 0 && !orderChanged) {
+    return res.status(400).json({ error: "No changes detected — the sheet matches the current roster." });
+  }
+
+  const totalAfter = existingStudentsInClass.length - removals.length + adds.length;
+  const summary = buildSyncSummary(cls.name, { adds, edits, removals, orderChanged }, totalAfter);
+
+  // Removals are destructive and must be confirmed explicitly — see the
+  // route-level comment above. Everything else about the sheet already
+  // validated cleanly by this point, so confirming is the ONLY thing left
+  // standing between this request and actually creating the PendingChange.
+  if (removals.length > 0 && !confirmed) {
+    return res.json({ needsConfirmation: true, diff: { classId, className: cls.name, adds, edits, removals, orderChanged, summary } });
+  }
+
   const change = await prisma.pendingChange.create({
     data: {
-      type: "bulk_add_students",
-      summary: `Add ${toAdd.length} students to ${cls.name} (${hostellerCount} hosteller${hostellerCount === 1 ? "" : "s"}, ${dayScholarCount} day scholar${dayScholarCount === 1 ? "" : "s"})`,
-      payload: { students: toAdd },
+      type: "sync_class_students",
+      summary,
+      payload: { classId, adds, edits, removals, order, orderChanged },
       requestedById: req.user.id,
       status: "pending",
     },
   });
 
-  res.json({ change, addedCount: toAdd.length });
+  res.json({ change, diff: { classId, className: cls.name, adds, edits, removals, orderChanged, summary } });
 });
