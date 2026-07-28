@@ -62,7 +62,7 @@ changesRouter.post("/changes", requireAuth, requireRole("DB_MANAGER"), async (re
   const { type, summary, payload } = req.body || {};
   if (!type || !summary || !payload) return res.status(400).json({ error: "type, summary, and payload are required" });
 
-  // A new Warden/LAI/DO/Incharge Teacher account needs its 4-digit login
+  // A new Warden/LAI/DO/Lecturer account needs its 4-digit login
   // key assigned *before* it ever reaches the AO — generated here, on the
   // server, so the Database Manager's browser can't just make one up.
   // The actual User row still isn't created until AO approves (applyChange

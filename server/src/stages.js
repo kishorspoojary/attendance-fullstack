@@ -4,7 +4,7 @@
 // approve, the record is published straight to the Principal's report.
 export const STAGES = [
   { key: "doApproved", role: "DO", label: "DO verified" },
-  { key: "teacherApproved", role: "INCHARGE_TEACHER", label: "Incharge Teacher approved" },
+  { key: "teacherApproved", role: "LECTURER", label: "Lecturer approved" },
   { key: "coordinatorApproved", role: "COORDINATOR", label: "Coordinator approved" },
 ];
 

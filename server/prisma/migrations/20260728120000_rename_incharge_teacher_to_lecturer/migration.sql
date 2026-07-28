@@ -1,0 +1,17 @@
+-- Pure rename: the Role enum value INCHARGE_TEACHER becomes LECTURER.
+-- No behavior or responsibility change — this role still does exactly what
+-- it did (the middle stage of the daily attendance chain: DO -> Lecturer ->
+-- Coordinator), just under its real name everywhere: enum, database, code,
+-- and UI.
+--
+-- ALTER TYPE ... RENAME VALUE is a single catalog-level rename of one enum
+-- label to another — every existing User row with role = 'INCHARGE_TEACHER'
+-- reads back as 'LECTURER' the moment this runs, automatically, with no
+-- UPDATE statement and no risk of missing a row. This is NOT the "add the
+-- new value, migrate rows across, then drop the old value" dance a Postgres
+-- enum change usually needs — that complexity is only required when values
+-- are being merged, split, or removed outright (each of which changes how
+-- many distinct values existing rows can be classified into). A straight
+-- 1:1 rename has none of that ambiguity, so the single-statement form is
+-- both correct and the least risky option here.
+ALTER TYPE "Role" RENAME VALUE 'INCHARGE_TEACHER' TO 'LECTURER';

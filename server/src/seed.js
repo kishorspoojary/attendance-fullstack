@@ -9,8 +9,8 @@
 //      app's own registration screen).
 //   2. Log in as Principal and create the AO / Coordinator / Database
 //      Manager accounts ("activate the system").
-//   3. Log in as Database Manager, create Warden / LAI / DO / Incharge
-//      Teacher accounts — each needs AO approval before it can log in.
+//   3. Log in as Database Manager, create Warden / LAI / DO / Lecturer
+//      accounts — each needs AO approval before it can log in.
 // Seeding fake users would just let you skip testing that real flow, which
 // defeats the point of building it. Run this script (`npm run seed`) any
 // time after step 3 above, once you have a Database Manager account, to

@@ -16,7 +16,7 @@
 // IMPORTANT MODELING NOTE — there are two unrelated "floor" concepts in this
 // app, and this schema keeps them as two separate models on purpose:
 //   - CollegeFloor: a floor of the academic building. Holds Classrooms.
-//     Discipline Officers and Incharge Teachers are assigned to a
+//     Discipline Officers and Lecturers are assigned to a
 //     CollegeFloor (pooled — several staff can share one).
 //   - HostelFloor: a floor of a specific Hostel. Holds HostelRooms.
 //     Wardens are assigned directly to HostelRooms, not to a HostelFloor.
@@ -42,7 +42,7 @@ enum Role {
   DB_MANAGER
   WARDEN
   DO
-  INCHARGE_TEACHER
+  LECTURER
   LAI
 }
 
@@ -81,7 +81,7 @@ model User {
 
   // Scope of responsibility — which fields matter depends on the role:
   roomIds  Json @default("[]") // Warden: HostelRoom ids they cover
-  floorIds Json @default("[]") // DO / Incharge Teacher: CollegeFloor ids they cover (pooled)
+  floorIds Json @default("[]") // DO / Lecturer: CollegeFloor ids they cover (pooled)
   classIds Json @default("[]") // LAI: Classroom ids they cover
 
   pendingChanges PendingChange[]
@@ -180,7 +180,7 @@ model Student {
 // Every edit becomes a row here with status "pending", and only takes real
 // effect once an AO approves it (see applyChange.js). This is the two-person
 // control the workflow calls for, and it's also how new staff accounts
-// (Warden/LAI/DO/Incharge Teacher) get created — see type "create_staff".
+// (Warden/LAI/DO/Lecturer) get created — see type "create_staff".
 model PendingChange {
   id            String   @id @default(cuid())
   // e.g. "add_student", "create_staff", "bulk_add_students" — see applyChange.js.

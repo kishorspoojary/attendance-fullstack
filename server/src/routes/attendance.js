@@ -9,14 +9,14 @@
 //
 // The chain is exactly three human stages — AO does NOT approve daily
 // attendance, only master data and staff accounts:
-//   DO  →  Incharge Teacher  →  Coordinator  →  published
+//   DO  →  Lecturer  →  Coordinator  →  published
 //
 // The routes, in the order they happen during a real day:
 //   1. POST .../absence     — Warden/LAI mark a student absent (with a reason, for Wardens)
 //   2. POST .../reason       — DO confirms/enters the reason for one absentee
 //   3. POST .../headcount    — DO records the physical headcount
-//   4. POST .../approve      — DO / Teacher / Coordinator sign off, in order
-//   5. POST .../send-back    — DO / Teacher / Coordinator can bounce it back one stage instead
+//   4. POST .../approve      — DO / Lecturer / Coordinator sign off, in order
+//   5. POST .../send-back    — DO / Lecturer / Coordinator can bounce it back one stage instead
 //   6. POST .../cutoff       — Coordinator can force-publish anything still open past the deadline
 // ============================================================================
 import { Router } from "express";
@@ -190,18 +190,18 @@ attendanceRouter.post("/attendance/:date/:classId/headcount", requireAuth, requi
   res.json({ record: updated });
 });
 
-// Lookup: {"DO": "doApproved", "INCHARGE_TEACHER": "teacherApproved", "COORDINATOR": "coordinatorApproved"}
+// Lookup: {"DO": "doApproved", "LECTURER": "teacherApproved", "COORDINATOR": "coordinatorApproved"}
 const STAGE_ROLE_TO_KEY = Object.fromEntries(STAGES.map((s) => [s.role, s.key]));
 
 // --------------------------------------------------------------------------
-// STEP 4 — one shared route for all three approvals (DO, Incharge Teacher,
+// STEP 4 — one shared route for all three approvals (DO, Lecturer,
 // Coordinator). Which stage gets set is determined entirely by the logged-in
 // user's role.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
   "/attendance/:date/:classId/approve",
   requireAuth,
-  requireRole("DO", "INCHARGE_TEACHER", "COORDINATOR"),
+  requireRole("DO", "LECTURER", "COORDINATOR"),
   async (req, res) => {
     const { date, classId } = req.params;
     const stageKey = STAGE_ROLE_TO_KEY[req.user.role];
@@ -209,7 +209,7 @@ attendanceRouter.post(
     const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
     if (!classroom) return res.status(404).json({ error: "Class not found" });
 
-    if ((req.user.role === "DO" || req.user.role === "INCHARGE_TEACHER") && !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    if ((req.user.role === "DO" || req.user.role === "LECTURER") && !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
       return res.status(403).json({ error: "This class's floor isn't assigned to you" });
     }
 
@@ -261,7 +261,7 @@ attendanceRouter.post(
 attendanceRouter.post(
   "/attendance/:date/:classId/send-back",
   requireAuth,
-  requireRole("DO", "INCHARGE_TEACHER", "COORDINATOR"),
+  requireRole("DO", "LECTURER", "COORDINATOR"),
   async (req, res) => {
     const { date, classId } = req.params;
     const { reason } = req.body || {};
@@ -270,7 +270,7 @@ attendanceRouter.post(
     const stageKey = STAGE_ROLE_TO_KEY[req.user.role];
     const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
     if (!classroom) return res.status(404).json({ error: "Class not found" });
-    if ((req.user.role === "DO" || req.user.role === "INCHARGE_TEACHER") && !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    if ((req.user.role === "DO" || req.user.role === "LECTURER") && !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
       return res.status(403).json({ error: "This class's floor isn't assigned to you" });
     }
 

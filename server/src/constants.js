@@ -13,7 +13,7 @@ export const LEADERSHIP_ROLES = ["AO", "COORDINATOR", "DB_MANAGER"];
 
 // Roles the Database Manager creates. These start PENDING and need an AO
 // approval before they can log in — see routes/staff.js.
-export const FIELD_STAFF_ROLES = ["WARDEN", "LAI", "DO", "INCHARGE_TEACHER"];
+export const FIELD_STAFF_ROLES = ["WARDEN", "LAI", "DO", "LECTURER"];
 
 // Roles that can be frozen by an AO. Everyone except the Principal.
 export const FREEZABLE_ROLES = [...LEADERSHIP_ROLES, ...FIELD_STAFF_ROLES];

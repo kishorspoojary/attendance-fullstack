@@ -2,8 +2,8 @@
 
 A full-stack app for the workflow: Principal registers and sets up
 leadership → DB Manager proposes changes → AO approves → daily attendance
-flows Warden/LAI → DO → Incharge Teacher → Coordinator → Principal's
-report, with pooled DO/Incharge Teacher coverage per floor, send-back for
+flows Warden/LAI → DO → Lecturer → Coordinator → Principal's
+report, with pooled DO/Lecturer coverage per floor, send-back for
 corrections, and a deadline cutoff that auto-publishes unfinished lists
 with a tag (never bypassing the DO's verification step).
 
@@ -69,7 +69,7 @@ There are no demo logins — every account is created through the app itself:
    under **Students** (or run `npm run seed` first for starter data instead
    of entering it by hand).
 4. Still as Database Manager, use **Create staff account** to add a Warden,
-   an LAI, a DO, and an Incharge Teacher. Each gets a generated key shown
+   an LAI, a DO, and a Lecturer. Each gets a generated key shown
    immediately, but can't log in yet.
 5. Log in as AO (created in step 2) and approve those staff requests under
    **Master data approvals**. Now their keys work.
@@ -139,14 +139,14 @@ how it got here (see `git log` if you want that history).
   dropdown — the key alone identifies who you are.
 - **Account setup, in order:** Principal registers once → Principal creates
   AO/Coordinator/Database Manager → Database Manager creates Warden/LAI/
-  DO/Incharge Teacher accounts → AO approves each one before it can log in.
+  DO/Lecturer accounts → AO approves each one before it can log in.
   Every account starts on the same default password (`Welcome@123`) and
   must change it on first login.
 - **Two separate structures, both casually called "floor."** Hostel →
   Floor → Room (Wardens attach to rooms) and College Floor → Class/Batch
-  (DOs and Incharge Teachers attach to floors, pooled). They're unrelated
+  (DOs and Lecturers attach to floors, pooled). They're unrelated
   hierarchies even though people call both "floor" out loud.
-- **The daily chain is three stages, not four:** DO → Incharge Teacher →
+- **The daily chain is three stages, not four:** DO → Lecturer →
   Coordinator → published straight to the Principal. AO does not approve
   daily attendance at all — only master-data changes, new staff accounts,
   and freezing/unfreezing accounts.

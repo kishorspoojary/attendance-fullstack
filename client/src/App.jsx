@@ -42,7 +42,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 // attendance — Coordinator is the last human stage.
 const STAGES = [
   { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
-  { key: "teacherApproved", label: "Teacher approved", pendingLabel: "Incharge Teacher" },
+  { key: "teacherApproved", label: "Lecturer approved", pendingLabel: "Lecturer" },
   { key: "coordinatorApproved", label: "Coordinator approved", pendingLabel: "Coordinator" },
 ];
 function currentStageIndex(rec) {
@@ -71,7 +71,7 @@ function emptyRecord() {
 
 const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
-  WARDEN: "Warden", DO: "Discipline Officer", INCHARGE_TEACHER: "Incharge Teacher", LAI: "Local Attendance Incharge",
+  WARDEN: "Warden", DO: "Discipline Officer", LECTURER: "Lecturer", LAI: "Local Attendance Incharge",
 };
 // Mirrors server/src/constants.js's LEADERSHIP_ROLES — reset-password and
 // offboard are only backed by the server for these three roles, so the
@@ -803,7 +803,7 @@ export default function App() {
     ],
     WARDEN: [{ id: "warden", label: "Mark absentees", icon: Bed }],
     DO: [{ id: "do", label: "Verify & approve", icon: Phone }],
-    INCHARGE_TEACHER: [
+    LECTURER: [
       { id: "teacher", label: "Approve lists", icon: ClipboardCheck },
       { id: "status", label: "Attendance status", icon: LayoutDashboard },
     ],
@@ -883,7 +883,7 @@ export default function App() {
               {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
               {activeTab === "viewstudents" && <ViewStudents me={me} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
-              {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "INCHARGE_TEACHER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
+              {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "LECTURER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
               {activeTab === "students" && <StudentsAdmin state={state} runAction={runAction} />}
               {activeTab === "structure" && <StructureAdmin state={state} runAction={runAction} editBatch={editBatch} onDoneEditing={() => setEditBatch(null)} />}
               {activeTab === "assign" && <AssignAdmin state={state} runAction={runAction} />}
@@ -892,7 +892,7 @@ export default function App() {
               {activeTab === "mychanges" && <MyChanges state={state} me={me} runAction={runAction} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
-              {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Incharge Teacher" note="Lists appear once the Discipline Officer has verified them. Any Incharge Teacher on the floor can file this." />}
+              {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." />}
               {activeTab === "lai" && <LAIScreen state={state} date={date} me={me} runAction={runAction} />}
             </>
           )}
@@ -1517,7 +1517,7 @@ function AOFreezeAccounts({ state, runAction, me }) {
 
 function AOHierarchyStatus({ state }) {
   const byRole = (role) => state.staff.filter((s) => s.role === role);
-  const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("INCHARGE_TEACHER"), lais = byRole("LAI");
+  const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("LECTURER"), lais = byRole("LAI");
 
   const roomsWithoutWarden = state.hostelRooms.filter((r) => !wardens.some((w) => (w.roomIds || []).includes(r.id)));
   const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
@@ -1526,7 +1526,7 @@ function AOHierarchyStatus({ state }) {
   const gaps = [
     ...roomsWithoutWarden.map((r) => `Room ${r.roomNo} has no Warden`),
     ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
-    ...floorsWithoutTeacher.map((f) => `${f.name} has no Incharge Teacher`),
+    ...floorsWithoutTeacher.map((f) => `${f.name} has no Lecturer`),
     ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
     ...state.staff.filter((s) => s.status === "PENDING").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is waiting on approval`),
     ...state.staff.filter((s) => s.status === "FROZEN").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is frozen`),
@@ -1564,7 +1564,7 @@ function AOHierarchyStatus({ state }) {
       <div className="grid gap-4 md:grid-cols-2">
         <Group label="Wardens" list={wardens} describe={(w) => `${(w.roomIds || []).length} room(s)`} />
         <Group label="Discipline Officers (pooled per floor)" list={dos} describe={(d) => `${(d.floorIds || []).length} floor(s)`} />
-        <Group label="Incharge Teachers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
+        <Group label="Lecturers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
         <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
       </div>
     </div>
@@ -1863,7 +1863,7 @@ function ViewStudents({ me }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* 5c. Shared approval queue (Incharge Teacher and Coordinator)       */
+/* 5c. Shared approval queue (Lecturer and Coordinator)       */
 /* ---------------------------------------------------------------- */
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note }) {
   const day = state.attendance[date] || {};
@@ -1936,7 +1936,7 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
 function CoordinatorApprovals({ state, date, runAction }) {
   return (
     <div>
-      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Incharge Teacher has filed them. Approving here publishes straight to the Principal's report." />
+      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Lecturer has filed them. Approving here publishes straight to the Principal's report." />
       <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
         <div className="flex items-start gap-2 text-sm text-amber-800">
           <Bell size={15} className="mt-0.5 shrink-0" />
@@ -2756,7 +2756,7 @@ function StructureAdmin({ state, runAction, editBatch, onDoneEditing }) {
 function AssignAdmin({ state, runAction }) {
   const wardens = state.staff.filter((s) => s.role === "WARDEN");
   const dos = state.staff.filter((s) => s.role === "DO");
-  const teachers = state.staff.filter((s) => s.role === "INCHARGE_TEACHER");
+  const teachers = state.staff.filter((s) => s.role === "LECTURER");
   const lais = state.staff.filter((s) => s.role === "LAI");
 
   const [wardenId, setWardenId] = useState(""); const [wardenRooms, setWardenRooms] = useState([]);
@@ -2776,7 +2776,7 @@ function AssignAdmin({ state, runAction }) {
 
   return (
     <div>
-      <SectionTitle icon={UserCog} title="Assign staff" subtitle="A Warden can cover several rooms. DOs and Incharge Teachers are pooled per floor — any one assigned can act." />
+      <SectionTitle icon={UserCog} title="Assign staff" subtitle="A Warden can cover several rooms. DOs and Lecturers are pooled per floor — any one assigned can act." />
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Warden to room(s)</p>
@@ -2791,10 +2791,10 @@ function AssignAdmin({ state, runAction }) {
           <div className="mt-3"><Btn disabled={!doId} onClick={() => runAction(() => api.proposeChange("assign_do", `Assign ${dos.find((w) => w.id === doId)?.name} as DO`, { staffId: doId, floorIds: doFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">Assign Incharge Teacher to floor(s)</p>
-          <Field label="Teacher"><Select value={teacherId} onChange={(v) => { setTeacherId(v); setTeacherFloors(state.staff.find((s) => s.id === v)?.floorIds || []); }} options={teachers.map((w) => ({ value: w.id, label: w.name }))} /></Field>
+          <p className="mb-3 text-sm font-semibold text-slate-700">Assign Lecturer to floor(s)</p>
+          <Field label="Lecturer"><Select value={teacherId} onChange={(v) => { setTeacherId(v); setTeacherFloors(state.staff.find((s) => s.id === v)?.floorIds || []); }} options={teachers.map((w) => ({ value: w.id, label: w.name }))} /></Field>
           <div className="mt-3"><CheckGroup options={state.collegeFloors.map((f) => ({ value: f.id, label: f.name }))} selected={teacherFloors} onToggle={(v) => setTeacherFloors(toggle(teacherFloors, v))} /></div>
-          <div className="mt-3"><Btn disabled={!teacherId} onClick={() => runAction(() => api.proposeChange("assign_teacher", `Assign ${teachers.find((w) => w.id === teacherId)?.name} as Incharge Teacher`, { staffId: teacherId, floorIds: teacherFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <div className="mt-3"><Btn disabled={!teacherId} onClick={() => runAction(() => api.proposeChange("assign_teacher", `Assign ${teachers.find((w) => w.id === teacherId)?.name} as Lecturer`, { staffId: teacherId, floorIds: teacherFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Local Attendance Incharge to class</p>
@@ -2821,7 +2821,7 @@ function CreateStaffAdmin({ state, runAction }) {
 
   const scopeOptions = role === "WARDEN" ? roomOptions(state)
     : role === "LAI" ? state.classes.map((c) => ({ value: c.id, label: c.name }))
-    : state.collegeFloors.map((f) => ({ value: f.id, label: f.name })); // DO / INCHARGE_TEACHER
+    : state.collegeFloors.map((f) => ({ value: f.id, label: f.name })); // DO / LECTURER
 
   const scopeField = role === "WARDEN" ? "roomIds" : role === "LAI" ? "classIds" : "floorIds";
   const scopeLabel = role === "WARDEN" ? "Room(s)" : role === "LAI" ? "Class(es)" : "Floor(s)";
@@ -2839,7 +2839,7 @@ function CreateStaffAdmin({ state, runAction }) {
 
   return (
     <div>
-      <SectionTitle icon={UserPlus} title="Create a staff account" subtitle="Warden, Local Attendance Incharge, Discipline Officer, or Incharge Teacher. Sent to the AO for approval before it can log in." />
+      <SectionTitle icon={UserPlus} title="Create a staff account" subtitle="Warden, Local Attendance Incharge, Discipline Officer, or Lecturer. Sent to the AO for approval before it can log in." />
       <Card className="mb-6 p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
@@ -2848,7 +2848,7 @@ function CreateStaffAdmin({ state, runAction }) {
               <option value="WARDEN">Warden</option>
               <option value="LAI">Local Attendance Incharge</option>
               <option value="DO">Discipline Officer</option>
-              <option value="INCHARGE_TEACHER">Incharge Teacher</option>
+              <option value="LECTURER">Lecturer</option>
             </select>
           </Field>
         </div>

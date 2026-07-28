@@ -229,7 +229,7 @@ export async function applyChange(prisma, change) {
 
     case "assign_do":
     case "assign_teacher":
-      // DOs and Incharge Teachers are "pooled" per CollegeFloor — several
+      // DOs and Lecturers are "pooled" per CollegeFloor — several
       // staff can share the same floorIds, and any one of them can act.
       await prisma.user.update({ where: { id: p.staffId }, data: { floorIds: p.floorIds } });
       break;
@@ -238,7 +238,7 @@ export async function applyChange(prisma, change) {
       await prisma.user.update({ where: { id: p.staffId }, data: { classIds: p.classIds } });
       break;
 
-    // Creates a brand-new Warden/LAI/DO/Incharge Teacher account. The login
+    // Creates a brand-new Warden/LAI/DO/Lecturer account. The login
     // key was already generated back when the Database Manager proposed
     // this (see routes/changes.js) — never here, so the same key that was
     // shown then is the one that actually ends up on the account.
