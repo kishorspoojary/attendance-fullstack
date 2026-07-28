@@ -1265,6 +1265,24 @@ function ApprovalActions({ c, busy, onApprove, onReject, onSendBack, approveLabe
   );
 }
 
+// One row of a sync_class_students change's "Edited" section — {studentId,
+// roll, name, changes: {field: {old, new}}} from routes/excel.js's
+// diffAndValidateRoster. `changes` only ever holds the fields that actually
+// differ (name / hostelOrDay / room), each already resolved to display
+// strings server-side.
+function SyncEditDetail({ e }) {
+  return (
+    <div>
+      <div><span className="font-display text-slate-500">{e.roll}</span> <span className="font-medium text-slate-800">{e.name}</span></div>
+      <div className="ml-4 mt-0.5 space-y-0.5 text-xs">
+        {Object.entries(e.changes).map(([field, { old, new: next }]) => (
+          <div key={field} className="text-slate-500">{field}: <span className="text-slate-400 line-through">{old}</span> → <span className="font-medium text-slate-700">{next}</span></div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AOApprovals({ state, runAction }) {
   const pending = state.pendingChanges.filter((c) => c.status === "pending");
   // Only ever set for an approved create_staff change — that's the only
@@ -1353,6 +1371,50 @@ function AOApprovals({ state, runAction }) {
               <Card key={c.id} className="p-4">
                 <div className="font-medium text-slate-800">{c.summary}</div>
                 <div className="mt-1"><StudentAddDetail state={state} s={c.payload} showClass /></div>
+                <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
+                </div>
+              </Card>
+            );
+          }
+          if (c.type === "sync_class_students") {
+            const p = c.payload;
+            return (
+              <Card key={c.id} className="p-4">
+                <div className="mb-1 flex flex-wrap gap-2">
+                  <Badge tone="blue">Roster sync</Badge>
+                  {p.removals.length > 0 && <Badge tone="rose">Includes removals</Badge>}
+                </div>
+                <Collapsible header={<span className="font-medium text-slate-800">{c.summary}</span>}>
+                  <div className="space-y-3 border-l-2 border-slate-100 pl-3">
+                    {p.adds.length > 0 && (
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-emerald-600">Added ({p.adds.length})</p>
+                        <div className="space-y-1.5">{p.adds.map((s, i) => <StudentAddDetail key={i} state={state} s={s} />)}</div>
+                      </div>
+                    )}
+                    {p.removals.length > 0 && (
+                      <div>
+                        <p className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-rose-600"><AlertTriangle size={12} /> Removed ({p.removals.length})</p>
+                        <div className="space-y-1 text-sm">
+                          {p.removals.map((r) => (
+                            <div key={r.studentId} className="flex items-center gap-2 text-rose-700">
+                              <span className="font-display">{r.roll}</span><span>{r.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {p.edits.length > 0 && (
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-600">Edited ({p.edits.length})</p>
+                        <div className="space-y-2 text-sm">{p.edits.map((e) => <SyncEditDetail key={e.studentId} e={e} />)}</div>
+                      </div>
+                    )}
+                    {p.orderChanged && <p className="text-xs italic text-slate-500">Order updated to match the sheet.</p>}
+                  </div>
+                </Collapsible>
                 <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                   <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
