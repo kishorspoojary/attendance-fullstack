@@ -3092,9 +3092,10 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
         {visibleMine.map((c) => {
           const isBatch = c.type === "structure_batch";
           const isStudentChange = c.type === "add_student" || c.type === "bulk_add_students";
+          const isSyncChange = c.type === "sync_class_students";
           const sentBack = c.status === "sent_back";
           return (
-            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${(isBatch || isStudentChange) && sentBack ? "border-amber-200" : ""}`}>
+            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${(isBatch || isStudentChange || isSyncChange) && sentBack ? "border-amber-200" : ""}`}>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-slate-700">{isBatch ? `Structure batch — ${c.summary}` : c.summary}</span>
                 <Badge tone={myChangeTone(c.status)}>{c.status.replace("_", " ")}</Badge>
@@ -3109,6 +3110,20 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2">
                   <p className="text-xs text-amber-800"><span className="font-medium">AO's reason:</span> {c.reason}</p>
                   <Btn size="sm" variant="outline" onClick={() => setEditingChange(c)}><Pencil size={12} /> Edit and resubmit</Btn>
+                </div>
+              )}
+              {isSyncChange && sentBack && (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2">
+                  <p className="text-xs text-amber-800">
+                    <span className="font-medium">AO's reason:</span> {c.reason} — a roster sync isn't edited in place: download a fresh export, fix it in Excel, and re-upload to resubmit.
+                  </p>
+                  <Btn
+                    size="sm"
+                    variant="outline"
+                    onClick={() => api.exportStudents(c.payload.classId, state.classes.find((cl) => cl.id === c.payload.classId)?.name || "class")}
+                  >
+                    <FileDown size={12} /> Download current export
+                  </Btn>
                 </div>
               )}
             </div>
