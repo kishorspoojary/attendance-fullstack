@@ -2040,22 +2040,43 @@ function StudentsAdmin({ state, runAction }) {
   const [excelClassId, setExcelClassId] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  // Set only when the server comes back asking to confirm a diff that
+  // includes removals (see routes/excel.js's dry-run/confirm flow) — holds
+  // the exact File so "Continue" can resend it with confirm=true without
+  // making the Database Manager re-pick it.
+  const [pendingSyncConfirm, setPendingSyncConfirm] = useState(null); // { file, diff } | null
+  const [syncConfirmBusy, setSyncConfirmBusy] = useState(false);
 
   const excelClassName = state.classes.find((c) => c.id === excelClassId)?.name || "";
 
+  const runUpload = async (file, confirm) => {
+    try {
+      const result = await api.importStudents(file, confirm);
+      if (result.needsConfirmation) {
+        setPendingSyncConfirm({ file, diff: result.diff });
+        return;
+      }
+      setPendingSyncConfirm(null);
+      setImportResult(result); // { change, diff }
+      await runAction(() => Promise.resolve(), `${result.change.summary} — pending AO approval`);
+    } catch (e2) {
+      setPendingSyncConfirm(null);
+      setImportResult({ error: e2.message, errors: e2.errors || [] }); // e2.errors: per-row list — see api.js's uploadFile
+    }
+  };
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = ""; // lets the same file be picked again after fixing it
     if (!file) return;
     setImportBusy(true); setImportResult(null);
-    try {
-      const result = await api.importStudents(file);
-      setImportResult(result); // { change, addedCount }
-      if (result.addedCount > 0) await runAction(() => Promise.resolve(), `${result.addedCount} student(s) sent to AO for approval`);
-    } catch (e2) {
-      setImportResult({ error: e2.message, errors: e2.errors || [] }); // e2.errors: per-row list — see api.js's uploadFile
-    }
+    await runUpload(file, false);
     setImportBusy(false);
+  };
+  const confirmSyncRemovals = async () => {
+    const { file } = pendingSyncConfirm;
+    setSyncConfirmBusy(true);
+    await runUpload(file, true);
+    setSyncConfirmBusy(false);
   };
 
   // Both submitAdd and submitEdit stay open (busy, disabled) until the
@@ -2148,13 +2169,42 @@ function StudentsAdmin({ state, runAction }) {
                 {importResult.errors.map((e, i) => <p key={i}>{e}</p>)}
               </div>
             </div>
-          ) : importResult.addedCount > 0 ? (
-            <p className="mt-3 text-sm text-emerald-700">{importResult.addedCount} student(s) ready, pending AO approval.</p>
+          ) : importResult.change ? (
+            <p className="mt-3 text-sm text-emerald-700">{importResult.change.summary} — pending AO approval.</p>
           ) : importResult.error ? (
             <p className="mt-3 text-sm text-rose-600">{importResult.error}</p>
           ) : null
         )}
       </Card>
+
+      {pendingSyncConfirm && (
+        <Modal title={`Confirm removals — ${pendingSyncConfirm.diff.className}`} onClose={() => !syncConfirmBusy && setPendingSyncConfirm(null)}>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-700">
+              This will remove {pluralize(pendingSyncConfirm.diff.removals.length, "student")} from {pendingSyncConfirm.diff.className}. They'll be deleted once an AO approves this sync.
+            </p>
+            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+              {pendingSyncConfirm.diff.removals.map((r) => (
+                <div key={r.studentId}><span className="font-display">{r.roll}</span> {r.name}</div>
+              ))}
+            </div>
+            {(pendingSyncConfirm.diff.adds.length > 0 || pendingSyncConfirm.diff.edits.length > 0 || pendingSyncConfirm.diff.orderChanged) && (
+              <p className="text-xs text-slate-500">
+                This sheet also{pendingSyncConfirm.diff.adds.length > 0 && ` adds ${pluralize(pendingSyncConfirm.diff.adds.length, "student")}`}
+                {pendingSyncConfirm.diff.adds.length > 0 && pendingSyncConfirm.diff.edits.length > 0 && ","}
+                {pendingSyncConfirm.diff.edits.length > 0 && ` edits ${pluralize(pendingSyncConfirm.diff.edits.length, "student")}`}
+                {pendingSyncConfirm.diff.orderChanged && `${pendingSyncConfirm.diff.adds.length > 0 || pendingSyncConfirm.diff.edits.length > 0 ? " and" : ""} updates the roster order`}.
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Btn variant="ghost" onClick={() => setPendingSyncConfirm(null)} disabled={syncConfirmBusy}>Cancel</Btn>
+              <Btn variant="danger" onClick={confirmSyncRemovals} disabled={syncConfirmBusy}>
+                {syncConfirmBusy ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />} {syncConfirmBusy ? "Sending..." : "Continue — remove them"}
+              </Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       <Card className="mb-6 p-4">
         <button onClick={() => setShowManualAdd((v) => !v)} className="flex w-full items-center justify-between text-left">
