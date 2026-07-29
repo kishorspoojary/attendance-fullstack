@@ -79,25 +79,49 @@ export function shapeLeadership(users) {
   return users.map((u) => ({ ...baseFields(u), role: u.role }));
 }
 
-async function buildCollegeFloorLookup() {
-  const collegeFloors = await prisma.collegeFloor.findMany({
-    include: { classrooms: { include: { _count: { select: { students: true } } } } },
-  });
-  return new Map(collegeFloors.map((f) => [
-    f.id,
-    { id: f.id, name: f.name, count: f.classrooms.reduce((n, c) => n + c._count.students, 0) },
-  ]));
+// The response-shape decision itself, as a pure function over already-
+// fetched rows — split out from the route so "Coordinator gets ONLY
+// {lecturers}, nothing else" has a direct test that doesn't need a live DB
+// or an HTTP round-trip, same reasoning as buildEditedChangePayload in
+// routes/changes.js and diffAndValidateRoster in routes/excel.js.
+export function buildStaffDirectoryResponse(role, { staff, roomToFloor, floorCounts, dayScholarCount, collegeFloorLookup }) {
+  const byRole = (r) => staff.filter((s) => s.role === r);
+
+  if (role === "COORDINATOR") {
+    return { lecturers: shapeCollegeFloorStaff(byRole("LECTURER"), collegeFloorLookup) };
+  }
+
+  return {
+    wardens: shapeWardens(byRole("WARDEN"), roomToFloor, floorCounts),
+    lais: shapeLais(byRole("LAI"), dayScholarCount),
+    dos: shapeCollegeFloorStaff(byRole("DO"), collegeFloorLookup),
+    lecturers: shapeCollegeFloorStaff(byRole("LECTURER"), collegeFloorLookup),
+    // Fixed institutional roles (Principal + everything in LEADERSHIP_ROLES)
+    // have no assignment concept — shown for completeness, never flagged
+    // "unassigned" (that styling means something different: a field-role
+    // account with genuinely nothing assigned). Derived by exclusion from
+    // FIELD_STAFF_ROLES rather than a separate hardcoded list, so this can't
+    // drift if a field role is ever added.
+    leadership: shapeLeadership(staff.filter((s) => !FIELD_STAFF_ROLES.includes(s.role))),
+  };
 }
 
 staffDirectoryRouter.get("/staff-directory", requireAuth, requireRole("AO", "PRINCIPAL", "COORDINATOR"), async (req, res) => {
-  const collegeFloorLookup = await buildCollegeFloorLookup();
+  const collegeFloors = await prisma.collegeFloor.findMany({
+    include: { classrooms: { include: { _count: { select: { students: true } } } } },
+  });
+  const collegeFloorLookup = new Map(collegeFloors.map((f) => [
+    f.id,
+    { id: f.id, name: f.name, count: f.classrooms.reduce((n, c) => n + c._count.students, 0) },
+  ]));
 
-  // Coordinator gets a filtered response — Lecturers only — enforced here,
-  // not left to the frontend to hide sections of a full payload it was
-  // never supposed to receive.
+  // Coordinator only ever needs Lecturers, so skip fetching everything else
+  // this role can't see — the actual access enforcement is
+  // buildStaffDirectoryResponse's role branch below, this is just avoiding
+  // pointless queries for data that would be thrown away.
   if (req.user.role === "COORDINATOR") {
-    const lecturers = await prisma.user.findMany({ where: { role: "LECTURER" }, orderBy: { name: "asc" } });
-    return res.json({ lecturers: shapeCollegeFloorStaff(lecturers, collegeFloorLookup) });
+    const staff = await prisma.user.findMany({ where: { role: "LECTURER" }, orderBy: { name: "asc" } });
+    return res.json(buildStaffDirectoryResponse("COORDINATOR", { staff, collegeFloorLookup }));
   }
 
   const [staff, hostelRooms, dayScholarCount] = await Promise.all([
@@ -110,19 +134,5 @@ staffDirectoryRouter.get("/staff-directory", requireAuth, requireRole("AO", "PRI
   const floorCounts = new Map();
   for (const r of hostelRooms) floorCounts.set(r.hostelFloorId, (floorCounts.get(r.hostelFloorId) || 0) + r._count.students);
 
-  const byRole = (role) => staff.filter((s) => s.role === role);
-
-  res.json({
-    wardens: shapeWardens(byRole("WARDEN"), roomToFloor, floorCounts),
-    lais: shapeLais(byRole("LAI"), dayScholarCount),
-    dos: shapeCollegeFloorStaff(byRole("DO"), collegeFloorLookup),
-    lecturers: shapeCollegeFloorStaff(byRole("LECTURER"), collegeFloorLookup),
-    // Fixed institutional roles (Principal + everything in LEADERSHIP_ROLES)
-    // have no assignment concept — shown for completeness, never flagged
-    // "unassigned" (that styling means something different: a field-role
-    // account with genuinely nothing assigned). Derived by exclusion from
-    // FIELD_STAFF_ROLES rather than a separate hardcoded list, so this can't
-    // drift if a field role is ever added.
-    leadership: shapeLeadership(staff.filter((s) => !FIELD_STAFF_ROLES.includes(s.role))),
-  });
+  res.json(buildStaffDirectoryResponse(req.user.role, { staff, roomToFloor, floorCounts, dayScholarCount, collegeFloorLookup }));
 });
