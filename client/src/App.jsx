@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch, UserX, ListTree,
+  CalendarSearch, UserX, ListTree, BookUser,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -773,16 +773,19 @@ export default function App() {
     PRINCIPAL: [
       { id: "dashboard", label: "Daily report", icon: LayoutDashboard },
       { id: "leadership", label: "Leadership accounts", icon: UserPlus },
+      { id: "staffdirectory", label: "Staff directory", icon: BookUser },
     ],
     AO: [
       { id: "approvals", label: "Master data approvals", icon: ShieldCheck },
       { id: "freeze", label: "Freeze / unfreeze", icon: Snowflake },
       { id: "hierarchy", label: "Hierarchy status", icon: Users },
+      { id: "staffdirectory", label: "Staff directory", icon: BookUser },
       { id: "viewstudents", label: "View students", icon: ListTree },
     ],
     COORDINATOR: [
       { id: "coordinator", label: "Attendance approvals", icon: ListChecks },
       { id: "status", label: "Attendance status", icon: LayoutDashboard },
+      { id: "staffdirectory", label: "Staff directory", icon: BookUser },
     ],
     // Daily tasks first, setup/admin tasks last — reordered from the
     // original creation order after live use showed absentees/View
@@ -881,6 +884,7 @@ export default function App() {
               {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
               {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
+              {activeTab === "staffdirectory" && <StaffDirectory />}
               {activeTab === "viewstudents" && <ViewStudents me={me} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
               {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "LECTURER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
@@ -1816,6 +1820,108 @@ function HostelStudentsView({ hostels, dayScholars, query, role }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// One row: name, login key, status pill, assignment in plain language.
+// `kind` picks how to read the assignment out of `person`, since the
+// backend sends three different shapes (floors+count for Warden/DO/
+// Lecturer, a shared dayScholarCount for LAI, nothing at all for
+// leadership) rather than forcing one shape on all of them — see
+// server/src/routes/staffDirectory.js.
+function StaffDirectoryRow({ person, kind }) {
+  const statusTone = person.status === "ACTIVE" ? "emerald" : person.status === "FROZEN" ? "rose" : person.status === "PENDING" ? "amber" : "slate";
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-slate-800">{person.name}</span>
+          <span className="font-display text-xs text-slate-400">Key {person.loginKey}</span>
+          <Badge tone={statusTone}>{person.status}</Badge>
+        </div>
+        <div className="mt-0.5 text-xs">
+          {kind === "leadership" ? (
+            <span className="italic text-slate-400">Fixed role — no assignment</span>
+          ) : kind === "lai" ? (
+            <span className="text-slate-500">All day scholars — college-wide ({pluralize(person.dayScholarCount, "student")})</span>
+          ) : person.assignmentStatus === "none" ? (
+            <span className="font-medium text-rose-600">Unassigned — nothing covered</span>
+          ) : (
+            <span className="text-slate-500">{person.floors.map((f) => f.name).join(", ")} — {pluralize(person.totalCount, "student")}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One role's collapsible group — renders nothing if `people` is missing or
+// empty, which is what makes this same component work unmodified for
+// Coordinator's lecturers-only payload (every other group's data is simply
+// absent from that response, not an empty array to special-case).
+function StaffDirectoryGroup({ title, icon: Icon, people, kind }) {
+  if (!people || people.length === 0) return null;
+  const unassignedCount = kind === "floors" ? people.filter((p) => p.assignmentStatus === "none").length : 0;
+  return (
+    <Card className="mb-3 p-3">
+      <Collapsible
+        header={
+          <div className="flex flex-1 flex-wrap items-center gap-2">
+            <Icon size={15} className="text-slate-400" />
+            <span className="font-medium text-slate-800">{title}</span>
+            <Badge tone="slate">{pluralize(people.length, "person", "people")}</Badge>
+            {unassignedCount > 0 && <Badge tone="rose">{pluralize(unassignedCount, "unassigned")}</Badge>}
+          </div>
+        }
+      >
+        <div className="space-y-1.5 border-l-2 border-slate-100 pl-3">
+          {people.map((p) => <StaffDirectoryRow key={p.id} person={p} kind={kind} />)}
+        </div>
+      </Collapsible>
+    </Card>
+  );
+}
+
+// Read-only assignment visibility for leadership to review coverage —
+// distinct from Leadership Accounts (account administration: freeze/reset/
+// offboard), which this does not replace or touch. AO and Principal get
+// every group; Coordinator's request comes back with only `lecturers`
+// populated (enforced server-side, not hidden client-side) — the exact same
+// rendering below handles both since each StaffDirectoryGroup just renders
+// nothing for a group that isn't in the response.
+function StaffDirectory() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await api.getStaffDirectory();
+        if (!cancelled) setData(result);
+      } catch (e) {
+        if (!cancelled) setError(e.message || "Couldn't load the staff directory");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div>
+      <SectionTitle icon={BookUser} title="Staff directory" subtitle="Who's assigned where, and their current workload. Read-only." />
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      {!error && !data && <div className="grid h-40 place-items-center text-slate-400"><Loader2 className="animate-spin" size={18} /></div>}
+      {data && (
+        <>
+          <StaffDirectoryGroup title="Wardens" icon={Bed} people={data.wardens} kind="floors" />
+          <StaffDirectoryGroup title="Local Attendance Incharges" icon={GraduationCap} people={data.lais} kind="lai" />
+          <StaffDirectoryGroup title="Discipline Officers" icon={Phone} people={data.dos} kind="floors" />
+          <StaffDirectoryGroup title="Lecturers" icon={ClipboardCheck} people={data.lecturers} kind="floors" />
+          <StaffDirectoryGroup title="Leadership" icon={ShieldCheck} people={data.leadership} kind="leadership" />
+          {["wardens", "lais", "dos", "lecturers", "leadership"].every((k) => !data[k] || data[k].length === 0) && <EmptyNote text="No staff yet." />}
+        </>
+      )}
     </div>
   );
 }

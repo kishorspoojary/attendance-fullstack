@@ -113,6 +113,9 @@ export const api = {
   getStudentsByClass: () => request("/students/by-class"),
   getStudentsByHostel: () => request("/students/by-hostel"),
 
+  // ---- Staff directory (AO/Principal: full; Coordinator: Lecturers only — server-enforced) ----
+  getStaffDirectory: () => request("/staff-directory"),
+
   // ---- Daily attendance workflow ----
   setAbsence: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
   confirmAbsent: (date, classId, studentId) => request(`/attendance/${date}/${classId}/confirm`, { method: "POST", body: { studentId } }),
