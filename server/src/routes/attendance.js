@@ -24,6 +24,7 @@ import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
 import { STAGES, currentStageIndex, priorStageKey } from "../stages.js";
 import { DAILY_REASONS } from "../constants.js";
+import { isStudentOnWardensFloor } from "../wardenScope.js";
 
 export const attendanceRouter = Router();
 
@@ -53,8 +54,8 @@ attendanceRouter.post(
     const student = await prisma.student.findUnique({ where: { id: studentId } });
     if (!student || student.classId !== classId) return res.status(400).json({ error: "That student isn't in this class" });
 
-    if (req.user.role === "WARDEN" && !(req.user.roomIds || []).includes(student.roomId)) {
-      return res.status(403).json({ error: "This student isn't in one of your assigned rooms" });
+    if (req.user.role === "WARDEN" && !(await isStudentOnWardensFloor(prisma, req.user, student))) {
+      return res.status(403).json({ error: "This student isn't on one of your assigned hostel floors" });
     }
     if (req.user.role === "LAI" && !(req.user.classIds || []).includes(classId)) {
       return res.status(403).json({ error: "This class isn't assigned to you" });

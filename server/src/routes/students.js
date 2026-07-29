@@ -8,15 +8,19 @@ import { Router } from "express";
 import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
 import { AWAY_REASON } from "../constants.js";
+import { isStudentOnWardensFloor } from "../wardenScope.js";
 
 export const studentsRouter = Router();
 
 // Shared permission check for both routes below: a Warden may only act on
-// students in one of their own assigned rooms.
+// students on one of their own assigned hostel floors.
 async function assertOwnedByWarden(req, res) {
   const student = await prisma.student.findUnique({ where: { id: req.params.id } });
   if (!student) { res.status(404).json({ error: "Student not found" }); return null; }
-  if (!(req.user.roomIds || []).includes(student.roomId)) { res.status(403).json({ error: "This student isn't in one of your assigned rooms" }); return null; }
+  if (!(await isStudentOnWardensFloor(prisma, req.user, student))) {
+    res.status(403).json({ error: "This student isn't on one of your assigned hostel floors" });
+    return null;
+  }
   return student;
 }
 

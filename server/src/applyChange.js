@@ -222,15 +222,14 @@ export async function applyChange(prisma, change) {
       break;
 
     case "assign_warden":
-      // Wardens can cover several rooms at once, so we just overwrite their
-      // whole roomIds list with whatever the Database Manager selected.
-      await prisma.user.update({ where: { id: p.staffId }, data: { roomIds: p.roomIds } });
-      break;
-
     case "assign_do":
     case "assign_teacher":
-      // DOs and Lecturers are "pooled" per CollegeFloor — several
-      // staff can share the same floorIds, and any one of them can act.
+      // Wardens (HostelFloor) and DOs/Lecturers (CollegeFloor) are all
+      // "pooled" per floor — several staff can share the same floorIds, and
+      // any one of them can act. Which floor TYPE floorIds holds depends
+      // entirely on p.staffId's role (see schema.prisma's IMPORTANT
+      // MODELING NOTE) — this update doesn't need to know or care which,
+      // it just overwrites whatever the Database Manager selected.
       await prisma.user.update({ where: { id: p.staffId }, data: { floorIds: p.floorIds } });
       break;
 
@@ -253,7 +252,6 @@ export async function applyChange(prisma, change) {
           passwordHash,
           status: "ACTIVE",
           mustSetPassword: true,
-          roomIds: p.roomIds || [],
           floorIds: p.floorIds || [],
           classIds: p.classIds || [],
         },

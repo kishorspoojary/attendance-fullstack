@@ -1523,12 +1523,12 @@ function AOHierarchyStatus({ state }) {
   const byRole = (role) => state.staff.filter((s) => s.role === role);
   const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("LECTURER"), lais = byRole("LAI");
 
-  const roomsWithoutWarden = state.hostelRooms.filter((r) => !wardens.some((w) => (w.roomIds || []).includes(r.id)));
+  const hostelFloorsWithoutWarden = state.hostelFloors.filter((f) => !wardens.some((w) => (w.floorIds || []).includes(f.id)));
   const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
   const floorsWithoutTeacher = state.collegeFloors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
   const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
   const gaps = [
-    ...roomsWithoutWarden.map((r) => `Room ${r.roomNo} has no Warden`),
+    ...hostelFloorsWithoutWarden.map((f) => `${f.name} has no Warden`),
     ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
     ...floorsWithoutTeacher.map((f) => `${f.name} has no Lecturer`),
     ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
@@ -1566,7 +1566,7 @@ function AOHierarchyStatus({ state }) {
         </Card>
       )}
       <div className="grid gap-4 md:grid-cols-2">
-        <Group label="Wardens" list={wardens} describe={(w) => `${(w.roomIds || []).length} room(s)`} />
+        <Group label="Wardens (pooled per floor)" list={wardens} describe={(w) => `${(w.floorIds || []).length} floor(s)`} />
         <Group label="Discipline Officers (pooled per floor)" list={dos} describe={(d) => `${(d.floorIds || []).length} floor(s)`} />
         <Group label="Lecturers (pooled per floor)" list={teachers} describe={(t) => `${(t.floorIds || []).length} floor(s)`} />
         <Group label="Local Attendance Incharges" list={lais} describe={(l) => `${(l.classIds || []).length} class(es)`} />
@@ -2074,6 +2074,19 @@ function roomLabel(state, roomId) {
 }
 function roomOptions(state) {
   return state.hostelRooms.map((r) => ({ value: r.id, label: roomLabel(state, r.id) }));
+}
+// Wardens are assigned whole hostel floors (pooled — see schema.prisma's
+// IMPORTANT MODELING NOTE), not individual rooms — same "hostel / floor"
+// disambiguation as roomLabel, since two different hostels can share a
+// floor name (e.g. both have a "Ground Floor").
+function hostelFloorLabel(state, floorId) {
+  const floor = state.hostelFloors.find((f) => f.id === floorId);
+  if (!floor) return "Unknown floor";
+  const hostel = state.hostels.find((h) => h.id === floor.hostelId);
+  return `${hostel?.name || "?"} / ${floor.name}`;
+}
+function hostelFloorOptions(state) {
+  return state.hostelFloors.map((f) => ({ value: f.id, label: hostelFloorLabel(state, f.id) }));
 }
 function hostelIdForRoom(state, roomId) {
   const room = state.hostelRooms.find((r) => r.id === roomId);
@@ -2865,7 +2878,7 @@ function AssignAdmin({ state, runAction }) {
   const teachers = state.staff.filter((s) => s.role === "LECTURER");
   const lais = state.staff.filter((s) => s.role === "LAI");
 
-  const [wardenId, setWardenId] = useState(""); const [wardenRooms, setWardenRooms] = useState([]);
+  const [wardenId, setWardenId] = useState(""); const [wardenFloors, setWardenFloors] = useState([]);
   const [doId, setDoId] = useState(""); const [doFloors, setDoFloors] = useState([]);
   const [teacherId, setTeacherId] = useState(""); const [teacherFloors, setTeacherFloors] = useState([]);
   const [laiId, setLaiId] = useState(""); const [laiClasses, setLaiClasses] = useState([]);
@@ -2882,13 +2895,13 @@ function AssignAdmin({ state, runAction }) {
 
   return (
     <div>
-      <SectionTitle icon={UserCog} title="Assign staff" subtitle="A Warden can cover several rooms. DOs and Lecturers are pooled per floor — any one assigned can act." />
+      <SectionTitle icon={UserCog} title="Assign staff" subtitle="Wardens, DOs, and Lecturers are all pooled per floor — any one assigned can act." />
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-700">Assign Warden to room(s)</p>
-          <Field label="Warden"><Select value={wardenId} onChange={(v) => { setWardenId(v); setWardenRooms(state.staff.find((s) => s.id === v)?.roomIds || []); }} options={wardens.map((w) => ({ value: w.id, label: w.name }))} /></Field>
-          <div className="mt-3"><CheckGroup options={roomOptions(state)} selected={wardenRooms} onToggle={(v) => setWardenRooms(toggle(wardenRooms, v))} /></div>
-          <div className="mt-3"><Btn disabled={!wardenId} onClick={() => runAction(() => api.proposeChange("assign_warden", `Assign ${wardens.find((w) => w.id === wardenId)?.name} to ${wardenRooms.length} room(s)`, { staffId: wardenId, roomIds: wardenRooms }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
+          <p className="mb-3 text-sm font-semibold text-slate-700">Assign Warden to floor(s)</p>
+          <Field label="Warden"><Select value={wardenId} onChange={(v) => { setWardenId(v); setWardenFloors(state.staff.find((s) => s.id === v)?.floorIds || []); }} options={wardens.map((w) => ({ value: w.id, label: w.name }))} /></Field>
+          <div className="mt-3"><CheckGroup options={hostelFloorOptions(state)} selected={wardenFloors} onToggle={(v) => setWardenFloors(toggle(wardenFloors, v))} /></div>
+          <div className="mt-3"><Btn disabled={!wardenId} onClick={() => runAction(() => api.proposeChange("assign_warden", `Assign ${wardens.find((w) => w.id === wardenId)?.name} to ${wardenFloors.length} floor(s)`, { staffId: wardenId, floorIds: wardenFloors }), "Sent to AO for approval")}>Send for AO approval</Btn></div>
         </Card>
         <Card className="p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Assign Discipline Officer to floor(s)</p>
@@ -2925,12 +2938,15 @@ function CreateStaffAdmin({ state, runAction }) {
   const [busy, setBusy] = useState(false);
   const toggle = (arr, val) => (arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val]);
 
-  const scopeOptions = role === "WARDEN" ? roomOptions(state)
+  const scopeOptions = role === "WARDEN" ? hostelFloorOptions(state)
     : role === "LAI" ? state.classes.map((c) => ({ value: c.id, label: c.name }))
     : state.collegeFloors.map((f) => ({ value: f.id, label: f.name })); // DO / LECTURER
 
-  const scopeField = role === "WARDEN" ? "roomIds" : role === "LAI" ? "classIds" : "floorIds";
-  const scopeLabel = role === "WARDEN" ? "Room(s)" : role === "LAI" ? "Class(es)" : "Floor(s)";
+  // Warden and DO/LECTURER both use floorIds now (a different floor type
+  // depending on role — see schema.prisma's IMPORTANT MODELING NOTE); only
+  // LAI's classIds is a genuinely different field.
+  const scopeField = role === "LAI" ? "classIds" : "floorIds";
+  const scopeLabel = role === "LAI" ? "Class(es)" : "Floor(s)";
 
   const submit = async () => {
     if (!name.trim() || busy) return;
@@ -3247,8 +3263,12 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
 /* 5e. Warden and LAI                                                  */
 /* ---------------------------------------------------------------- */
 function WardenScreen({ state, date, me, runAction }) {
-  const rooms = me.roomIds || [];
-  const allStudents = state.students.filter((s) => rooms.includes(s.roomId));
+  // A Warden's students are every hosteller in any room on one of their
+  // assigned hostel floors (me.floorIds) — resolved via state.hostelRooms
+  // since Student only carries roomId, not the floor it's on.
+  const myFloorIds = me.floorIds || [];
+  const myRoomIds = new Set(state.hostelRooms.filter((r) => myFloorIds.includes(r.hostelFloorId)).map((r) => r.id));
+  const allStudents = state.students.filter((s) => myRoomIds.has(s.roomId));
   const away = allStudents.filter((s) => s.awayReason);
   const present = allStudents.filter((s) => !s.awayReason);
   const [pickerFor, setPickerFor] = useState(null); // studentId currently choosing a reason
