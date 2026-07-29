@@ -19,10 +19,17 @@
 //     Discipline Officers and Lecturers are assigned to a
 //     CollegeFloor (pooled — several staff can share one).
 //   - HostelFloor: a floor of a specific Hostel. Holds HostelRooms.
-//     Wardens are assigned directly to HostelRooms, not to a HostelFloor.
-// Never merge these into one "Floor" model — a Warden's rooms and a DO's
+//     Wardens are assigned to a HostelFloor too (pooled — several Wardens
+//     can share one), responsible for every room on it. This used to be
+//     modeled as room-level (User.roomIds), but every real Warden's
+//     coverage turned out to always be "every room on one or more whole
+//     floors" anyway (confirmed via server/src/reportWardenCoverage.js
+//     before this migration) — floor-level is what the role actually means.
+// Never merge these into one "Floor" model — a Warden's floor and a DO's
 // floor are genuinely different hierarchies (Hostel → Floor → Room vs.
-// College → Floor → Classroom) even though people casually call both "floor."
+// College → Floor → Classroom) even though people casually call both "floor,"
+// and User.floorIds holds one or the other depending entirely on role (see
+// below) — never both at once for the same person.
 // ============================================================================
 
 generator client {
@@ -80,8 +87,12 @@ model User {
   createdAt       DateTime      @default(now())
 
   // Scope of responsibility — which fields matter depends on the role:
-  roomIds  Json @default("[]") // Warden: HostelRoom ids they cover
-  floorIds Json @default("[]") // DO / Lecturer: CollegeFloor ids they cover (pooled)
+  // floorIds is shared by two roles that never coexist on the same person,
+  // holding a DIFFERENT floor type depending on which: Warden -> HostelFloor
+  // ids they cover (pooled), DO / Lecturer -> CollegeFloor ids they cover
+  // (pooled). See the IMPORTANT MODELING NOTE above — always resolve
+  // against the right model for req.user.role, never assume one or the other.
+  floorIds Json @default("[]")
   classIds Json @default("[]") // LAI: Classroom ids they cover
 
   pendingChanges PendingChange[]
