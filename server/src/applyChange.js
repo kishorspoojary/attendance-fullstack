@@ -10,7 +10,11 @@
 import bcrypt from "bcryptjs";
 import { generateTempPassword } from "./auth.js";
 import { buildStructurePlan, createFromStructurePlan } from "./structureBatch.js";
-import { revalidateStudentsForApproval, revalidateEditForApproval, revalidateSyncEditsForApproval, revalidateSyncRemovalsForApproval } from "./studentApproval.js";
+import {
+  revalidateStudentsForApproval, revalidateEditForApproval, revalidateSyncEditsForApproval, revalidateSyncRemovalsForApproval,
+  revalidateMoveForApproval, revalidateBatchMoveForApproval,
+} from "./studentApproval.js";
+import { computeSeqAssignments, applySeqAssignments, computeSingleMoveOrder } from "./seqOrder.js";
 
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
@@ -178,14 +182,65 @@ export async function applyChange(prisma, change) {
 
         const classStudentsNow = await tx.student.findMany({ where: { classId: p.classId } });
         const idByRoll = new Map(classStudentsNow.map((s) => [norm(s.roll), s.id]));
-        let seq = 1;
-        for (const roll of p.order) {
-          const id = idByRoll.get(norm(roll));
-          if (id) {
-            await tx.student.update({ where: { id }, data: { seq } });
-            seq++;
-          }
+        const orderedIds = p.order.map((roll) => idByRoll.get(norm(roll))).filter(Boolean);
+        await applySeqAssignments(tx, computeSeqAssignments(orderedIds));
+      });
+      break;
+
+    // A single student's class / hostel-room-or-day-scholar status /
+    // roster position, in any combination — see routes/studentMove.js for
+    // how the payload is built and routes/studentMove.js's before->after
+    // capture. Re-validated inside the transaction (student, destination
+    // class/room, and the placeAfterStudentId target if given, all still
+    // exist and are where the payload expects — revalidateMoveForApproval),
+    // same staleness-guard pattern as every other student-changing type.
+    // AttendanceRecord is never touched here, deliberately — a move only
+    // changes where a student appears GOING FORWARD; past attendance
+    // records keep referencing the class/student exactly as recorded.
+    case "move_student":
+      await prisma.$transaction(async (tx) => {
+        await revalidateMoveForApproval(tx, p);
+
+        await tx.student.update({
+          where: { id: p.studentId },
+          data: { classId: p.newClassId, roomId: p.newRoomId || null, isLocal: p.newIsLocal },
+        });
+
+        const destClassStudents = await tx.student.findMany({ where: { classId: p.newClassId }, orderBy: { seq: "asc" } });
+        const existingOrderedIds = destClassStudents.map((s) => s.id).filter((id) => id !== p.studentId);
+        const newOrder = computeSingleMoveOrder(existingOrderedIds, p.studentId, p.placeAfterStudentId || null, !!p.placeAtEnd);
+        if (newOrder === null) {
+          throw new Error("The student to place this after is no longer in the destination class — this request is stale. Send it back or reject it.");
         }
+        await applySeqAssignments(tx, computeSeqAssignments(newOrder));
+      });
+      break;
+
+    // Many students -> one destination class, always appended at the end
+    // of that class in the order given (no per-student position picker —
+    // see routes/studentMove.js). Room/day-scholar status is resolved PER
+    // MOVE at propose time (p.moves[i].newRoomId/newIsLocal) — either a
+    // room every move in the batch shares, or that student's own current
+    // room/type kept as-is, depending on whether the Database Manager
+    // explicitly overrode it for the batch — never a single top-level
+    // value this case would have to fan out itself. Same re-validation and
+    // "never touch AttendanceRecord" rules as move_student above.
+    case "move_students_batch":
+      await prisma.$transaction(async (tx) => {
+        await revalidateBatchMoveForApproval(tx, p);
+
+        const movingIds = p.moves.map((m) => m.studentId);
+        for (const m of p.moves) {
+          await tx.student.update({
+            where: { id: m.studentId },
+            data: { classId: p.newClassId, roomId: m.newRoomId || null, isLocal: m.newIsLocal },
+          });
+        }
+
+        const destClassStudents = await tx.student.findMany({ where: { classId: p.newClassId }, orderBy: { seq: "asc" } });
+        const existingOrderedIds = destClassStudents.map((s) => s.id).filter((id) => !movingIds.includes(id));
+        const newOrder = [...existingOrderedIds, ...movingIds]; // append in the given order
+        await applySeqAssignments(tx, computeSeqAssignments(newOrder));
       });
       break;
 

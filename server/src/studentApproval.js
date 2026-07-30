@@ -135,3 +135,61 @@ export async function revalidateSyncRemovalsForApproval(client, removals) {
     }
   }
 }
+
+// Re-validates a move_student change inside the approval transaction: the
+// student, the destination class, the destination room (if not becoming a
+// day scholar), and — if a position was requested — the student they
+// should land after, must ALL still exist and still be where the payload
+// expects. Roll never changes on a move, so there's no roll-uniqueness
+// re-check here the way there is for adds/edit_student's roll field.
+export async function revalidateMoveForApproval(client, p) {
+  const student = await client.student.findUnique({ where: { id: p.studentId } });
+  if (!student) {
+    throw new Error(`This student (roll ${p.roll}) no longer exists — this request is stale. Send it back or reject it.`);
+  }
+  const destClass = await client.classroom.findUnique({ where: { id: p.newClassId } });
+  if (!destClass) {
+    throw new Error("The destination class no longer exists — this request is stale. Send it back or reject it.");
+  }
+  if (!p.newIsLocal) {
+    const room = p.newRoomId ? await client.hostelRoom.findUnique({ where: { id: p.newRoomId } }) : null;
+    if (!room) {
+      throw new Error("The destination room no longer exists — this request is stale. Send it back or reject it.");
+    }
+  }
+  if (p.placeAfterStudentId) {
+    const target = await client.student.findUnique({ where: { id: p.placeAfterStudentId } });
+    if (!target || target.classId !== p.newClassId) {
+      throw new Error("The student to place this after is no longer in the destination class — this request is stale. Send it back or reject it.");
+    }
+  }
+}
+
+// Re-validates a move_students_batch change inside the approval
+// transaction: the destination class, every moving student, and each
+// move's OWN resolved destination room (either a shared room every move in
+// the batch points at, or that student's own kept room — see
+// routes/studentMove.js's "keep current room/type" default) must all still
+// exist. No position re-check — a batch always appends, so there's no
+// placeAfterStudentId to go stale.
+export async function revalidateBatchMoveForApproval(client, p) {
+  const destClass = await client.classroom.findUnique({ where: { id: p.newClassId } });
+  if (!destClass) {
+    throw new Error("The destination class no longer exists — this request is stale. Send it back or reject it.");
+  }
+  const roomCache = new Map();
+  for (const m of p.moves) {
+    const student = await client.student.findUnique({ where: { id: m.studentId } });
+    if (!student) {
+      throw new Error(`A student in this batch (roll ${m.roll}) no longer exists — this request is stale. Send it back or reject it.`);
+    }
+    if (m.newRoomId) {
+      if (!roomCache.has(m.newRoomId)) {
+        roomCache.set(m.newRoomId, await client.hostelRoom.findUnique({ where: { id: m.newRoomId } }));
+      }
+      if (!roomCache.get(m.newRoomId)) {
+        throw new Error(`The room for roll ${m.roll} no longer exists — this request is stale. Send it back or reject it.`);
+      }
+    }
+  }
+}
