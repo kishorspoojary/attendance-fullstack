@@ -1824,12 +1824,31 @@ function HostelStudentsView({ hostels, dayScholars, query, role }) {
   );
 }
 
+// One floor's line: "Boys Hostel A — Floor 1 · 3 students" for a Warden
+// (f.hostelName present — a hostel floor's bare name is ambiguous across
+// hostels), or "College Floor 1 · 3 students" for a DO/Lecturer (no
+// hostelName — a CollegeFloor isn't nested under a second parent the same
+// way, so no prefix is needed). Zero students reads as a calm, neutral
+// fact ("no students currently"), not styled as a problem — an empty floor
+// is a normal state, not something wrong with the assignment.
+function FloorLine({ floor }) {
+  return (
+    <span className="text-slate-500">
+      {floor.hostelName && <>{floor.hostelName} — </>}{floor.name} · {floor.count > 0 ? pluralize(floor.count, "student") : "no students currently"}
+    </span>
+  );
+}
+
 // One row: name, login key, status pill, assignment in plain language.
 // `kind` picks how to read the assignment out of `person`, since the
 // backend sends three different shapes (floors+count for Warden/DO/
 // Lecturer, a shared dayScholarCount for LAI, nothing at all for
 // leadership) rather than forcing one shape on all of them — see
-// server/src/routes/staffDirectory.js.
+// server/src/routes/staffDirectory.js. Multiple floors get one line each
+// (matches how a multi-item detail list reads elsewhere in this app, e.g.
+// SyncEditDetail's field-by-field breakdown) plus a total, rather than one
+// long comma-joined line that gets hard to parse once each floor also
+// carries its own hostel name and count.
 function StaffDirectoryRow({ person, kind }) {
   const statusTone = person.status === "ACTIVE" ? "emerald" : person.status === "FROZEN" ? "rose" : person.status === "PENDING" ? "amber" : "slate";
   return (
@@ -1846,9 +1865,18 @@ function StaffDirectoryRow({ person, kind }) {
           ) : kind === "lai" ? (
             <span className="text-slate-500">All day scholars — college-wide ({pluralize(person.dayScholarCount, "student")})</span>
           ) : person.assignmentStatus === "none" ? (
-            <span className="font-medium text-rose-600">Unassigned — nothing covered</span>
+            // Calm amber, not rose — a fresh account with nothing assigned
+            // yet is a normal, expected state (awaiting the AO's assignment
+            // step), not an error. Distinct from leadership's fully-neutral
+            // "Fixed role" text above, which has nothing to assign at all.
+            <span className="font-medium text-amber-700">Not yet assigned — awaiting floor assignment</span>
+          ) : person.floors.length === 1 ? (
+            <FloorLine floor={person.floors[0]} />
           ) : (
-            <span className="text-slate-500">{person.floors.map((f) => f.name).join(", ")} — {pluralize(person.totalCount, "student")}</span>
+            <div className="space-y-0.5">
+              {person.floors.map((f) => <div key={f.id}><FloorLine floor={f} /></div>)}
+              <div className="font-medium text-slate-600">{pluralize(person.totalCount, "student")} total</div>
+            </div>
           )}
         </div>
       </div>
@@ -1871,7 +1899,7 @@ function StaffDirectoryGroup({ title, icon: Icon, people, kind }) {
             <Icon size={15} className="text-slate-400" />
             <span className="font-medium text-slate-800">{title}</span>
             <Badge tone="slate">{pluralize(people.length, "person", "people")}</Badge>
-            {unassignedCount > 0 && <Badge tone="rose">{pluralize(unassignedCount, "unassigned")}</Badge>}
+            {unassignedCount > 0 && <Badge tone="amber">{unassignedCount} not yet assigned</Badge>}
           </div>
         }
       >

@@ -109,13 +109,16 @@ staffDirectoryRouter.get("/staff-directory", requireAuth, requireRole("AO", "PRI
 
   const [staff, hostelFloors, dayScholarCount] = await Promise.all([
     prisma.user.findMany({ orderBy: { name: "asc" } }),
-    prisma.hostelFloor.findMany({ include: { rooms: { include: { _count: { select: { students: true } } } } } }),
+    prisma.hostelFloor.findMany({ include: { hostel: true, rooms: { include: { _count: { select: { students: true } } } } } }),
     prisma.student.count({ where: { roomId: null } }),
   ]);
 
+  // hostelName included (unlike collegeFloorLookup below) because a hostel
+  // floor's name alone is ambiguous — "Floor 1" could be in any hostel,
+  // where a CollegeFloor isn't nested under a second parent the same way.
   const hostelFloorLookup = new Map(hostelFloors.map((f) => [
     f.id,
-    { id: f.id, name: f.name, count: f.rooms.reduce((n, r) => n + r._count.students, 0) },
+    { id: f.id, name: f.name, hostelName: f.hostel.name, count: f.rooms.reduce((n, r) => n + r._count.students, 0) },
   ]));
 
   res.json(buildStaffDirectoryResponse(req.user.role, { staff, hostelFloorLookup, dayScholarCount, collegeFloorLookup }));
