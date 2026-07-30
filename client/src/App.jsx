@@ -26,7 +26,7 @@ import {
   Clock, CheckCircle2, AlertTriangle, ChevronDown, Plus, Trash2, Check, X,
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
-  CalendarSearch, UserX, ListTree, BookUser,
+  CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -1382,6 +1382,47 @@ function AOApprovals({ state, runAction }) {
               </Card>
             );
           }
+          if (c.type === "move_student") {
+            const p = c.payload;
+            return (
+              <Card key={c.id} className="p-4">
+                <div className="mb-1"><Badge tone="blue">Move student</Badge></div>
+                <div className="font-medium text-slate-800">{c.summary}</div>
+                {(p.placeAfterStudentId || p.placeAtEnd) && (
+                  <div className="mt-1 text-xs text-slate-500">
+                    Position: {p.placeAtEnd ? "moved to the end of the destination class" : `placed after ${state.students.find((s) => s.id === p.placeAfterStudentId)?.name || "another student"}`}
+                  </div>
+                )}
+                <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
+                </div>
+              </Card>
+            );
+          }
+          if (c.type === "move_students_batch") {
+            const p = c.payload;
+            const destClassName = state.classes.find((cl) => cl.id === p.newClassId)?.name || "?";
+            return (
+              <Card key={c.id} className="p-4">
+                <div className="mb-1"><Badge tone="blue">Batch move</Badge></div>
+                <Collapsible header={<span className="font-medium text-slate-800">{c.summary}</span>}>
+                  <div className="space-y-1 border-l-2 border-slate-100 pl-3 text-sm">
+                    {p.moves.map((m) => (
+                      <div key={m.studentId}>
+                        <span className="font-display text-slate-500">{m.roll}</span> <span className="font-medium text-slate-800">{m.name}</span>{" "}
+                        <span className="text-slate-400">— {state.classes.find((cl) => cl.id === m.oldClassId)?.name || "?"} → {destClassName}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Collapsible>
+                <div className="mt-1 text-xs text-slate-500">Requested {formatDMY(c.createdAt)} {formatTime(c.createdAt)}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onReject={reject} onSendBack={sendBackStudentChange} />
+                </div>
+              </Card>
+            );
+          }
           if (c.type === "sync_class_students") {
             const p = c.payload;
             return (
@@ -2150,6 +2191,167 @@ function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, on
   );
 }
 
+// Where to insert a moved student within the destination class's roster —
+// mirrors server/src/seqOrder.js's computeSingleMoveOrder exactly: "top"
+// sends neither field (that function's own default), "end" sends
+// placeAtEnd, "after" sends placeAfterStudentId. `destStudents` is the
+// destination class's CURRENT roster, already seq-ordered, with the
+// student being moved excluded (they can't be placed relative to
+// themselves) — same list either way, since a same-class move and a
+// cross-class move both reorder against "everyone else already there."
+const POSITION_TOP = "top", POSITION_END = "end", POSITION_AFTER = "after";
+function MovePositionField({ destStudents, positionMode, onPositionModeChange, placeAfterStudentId, onPlaceAfterChange }) {
+  return (
+    <>
+      <Field label="Position in destination class">
+        <select className={inputCls} value={positionMode} onChange={(e) => onPositionModeChange(e.target.value)}>
+          <option value={POSITION_TOP}>Top of the class</option>
+          <option value={POSITION_END}>Bottom of the class</option>
+          {destStudents.length > 0 && <option value={POSITION_AFTER}>After a specific student...</option>}
+        </select>
+      </Field>
+      {positionMode === POSITION_AFTER && (
+        <Field label="Place after">
+          <Select value={placeAfterStudentId} onChange={onPlaceAfterChange} options={destStudents.map((s) => ({ value: s.id, label: `${s.roll} — ${s.name}` }))} />
+        </Field>
+      )}
+    </>
+  );
+}
+
+// Single-student move: change class / hostel room / day-scholar status /
+// roster position, in any combination, in one form — mirrors the Edit
+// modal's shape (same HostelOrDayFields) plus the position picker above.
+// Defaults every field to the student's CURRENT values so an untouched
+// submit is a pure position-only move rather than accidentally clearing
+// their room. Goes through api.moveStudent -> AO approval, same as every
+// other student change (see server/src/routes/studentMove.js).
+function MoveStudentModal({ state, student, runAction, onClose }) {
+  const [classId, setClassId] = useState(student.classId);
+  const [hostelOrDay, setHostelOrDay] = useState(student.isLocal ? DAY_SCHOLAR_VALUE : hostelIdForRoom(state, student.roomId));
+  const [roomId, setRoomId] = useState(student.roomId || "");
+  const [positionMode, setPositionMode] = useState(POSITION_TOP);
+  const [placeAfterStudentId, setPlaceAfterStudentId] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Destination class's current roster (seq order, as state.students
+  // already arrives — see StudentsAdmin's own comment on that ordering),
+  // minus the student being moved.
+  const destStudents = state.students.filter((s) => s.classId === classId && s.id !== student.id);
+
+  const submit = async () => {
+    setError("");
+    if (!hostelOrDay) return setError("Choose a room, or mark this student as a day scholar.");
+    if (hostelOrDay !== DAY_SCHOLAR_VALUE && !roomId) return setError("Choose a room in that hostel.");
+    if (positionMode === POSITION_AFTER && !placeAfterStudentId) return setError("Choose which student to place this after.");
+
+    const becomeDayScholar = hostelOrDay === DAY_SCHOLAR_VALUE;
+    const body = {
+      newClassId: classId,
+      becomeDayScholar,
+      newRoomId: becomeDayScholar ? null : roomId,
+      placeAfterStudentId: positionMode === POSITION_AFTER ? placeAfterStudentId : null,
+      placeAtEnd: positionMode === POSITION_END,
+    };
+    setBusy(true);
+    const result = await runAction(() => api.moveStudent(student.id, body), "Sent to AO for approval");
+    setBusy(false);
+    if (result) onClose();
+  };
+
+  return (
+    <Modal title={`Move ${student.name}`} onClose={busy ? () => {} : onClose}>
+      <div className="space-y-3">
+        <Field label="Destination class"><Select value={classId} onChange={(v) => { setClassId(v); setPositionMode(POSITION_TOP); setPlaceAfterStudentId(""); }} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+        <HostelOrDayFields state={state} hostelOrDay={hostelOrDay} roomId={roomId} onHostelOrDayChange={(v) => { setHostelOrDay(v); setRoomId(""); }} onRoomChange={setRoomId} />
+        <MovePositionField destStudents={destStudents} positionMode={positionMode} onPositionModeChange={setPositionMode} placeAfterStudentId={placeAfterStudentId} onPlaceAfterChange={setPlaceAfterStudentId} />
+      </div>
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      <div className="mt-4 flex justify-end gap-2">
+        <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <ArrowRightLeft size={14} />} {busy ? "Sending..." : "Send for AO approval"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// The shared room/day-scholar control for a BATCH move — same three-way
+// shape as HostelOrDayFields' single-student version, plus a fourth
+// leading option ("keep each student's own") that HostelOrDayFields has no
+// equivalent for, since a single move always resolves to one concrete
+// destination while a batch's whole point is that this dimension is
+// OPTIONAL and shared — see routes/studentMove.js's changingRoomForAll.
+const KEEP_CURRENT_VALUE = "KEEP_CURRENT";
+function BatchRoomField({ state, value, roomId, onValueChange, onRoomChange }) {
+  return (
+    <>
+      <Field label="Room / day-scholar status for all selected">
+        <select className={inputCls} value={value} onChange={(e) => onValueChange(e.target.value)}>
+          <option value={KEEP_CURRENT_VALUE}>Keep each student's own room / status</option>
+          <option value={DAY_SCHOLAR_VALUE}>Day scholar (all)</option>
+          {state.hostels.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+        </select>
+      </Field>
+      {value && value !== KEEP_CURRENT_VALUE && value !== DAY_SCHOLAR_VALUE && (
+        <Field label="Room">
+          <Select value={roomId} onChange={onRoomChange} options={roomsForHostel(state, value).map((r) => ({ value: r.id, label: r.roomNo }))} />
+        </Field>
+      )}
+    </>
+  );
+}
+
+// Batch move: same class for everyone, optionally the same room/day-scholar
+// status too. No position control here — a batch always appends to the end
+// of the destination class's roster (see routes/studentMove.js's comment on
+// why: no per-student placeAfterStudentId makes sense for a whole group at
+// once), unlike the single move above.
+function BulkMoveModal({ state, studentIds, runAction, onClose }) {
+  const students = state.students.filter((s) => studentIds.includes(s.id));
+  const [classId, setClassId] = useState("");
+  const [roomMode, setRoomMode] = useState(KEEP_CURRENT_VALUE); // KEEP_CURRENT_VALUE | DAY_SCHOLAR_VALUE | a hostel id
+  const [roomId, setRoomId] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (!classId) return setError("Choose a destination class.");
+    if (roomMode !== KEEP_CURRENT_VALUE && roomMode !== DAY_SCHOLAR_VALUE && !roomId) return setError("Choose a room in that hostel.");
+
+    const changingRoomForAll = roomMode !== KEEP_CURRENT_VALUE;
+    const becomeDayScholar = roomMode === DAY_SCHOLAR_VALUE;
+    const body = {
+      studentIds,
+      newClassId: classId,
+      becomeDayScholar: changingRoomForAll ? becomeDayScholar : undefined,
+      newRoomId: changingRoomForAll && !becomeDayScholar ? roomId : undefined,
+    };
+    setBusy(true);
+    const result = await runAction(() => api.moveStudentsBatch(body), `Sent ${pluralize(studentIds.length, "student")} to AO for approval`);
+    setBusy(false);
+    if (result) onClose();
+  };
+
+  return (
+    <Modal title={`Move ${pluralize(students.length, "student")}`} onClose={busy ? () => {} : onClose}>
+      <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2 text-xs text-slate-600">
+        {students.map((s) => <div key={s.id}>{s.roll} — {s.name}</div>)}
+      </div>
+      <div className="mt-3 space-y-3">
+        <Field label="Destination class"><Select value={classId} onChange={setClassId} options={state.classes.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+        <BatchRoomField state={state} value={roomMode} roomId={roomId} onValueChange={(v) => { setRoomMode(v); setRoomId(""); }} onRoomChange={setRoomId} />
+      </div>
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      <div className="mt-4 flex justify-end gap-2">
+        <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={14} /> : <ArrowRightLeft size={14} />} {busy ? "Sending..." : "Send for AO approval"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 // A student can have at most one UNRESOLVED (pending or sent_back) edit or
 // delete outstanding at a time. This is the AUTHORITATIVE guard — derived
 // from state.pendingChanges, the same data the server itself checks (see
@@ -2166,7 +2368,7 @@ function HostelOrDayFields({ state, hostelOrDay, roomId, onHostelOrDayChange, on
 // diffAndValidateRoster) also locks any student its edits or removals
 // reference — adds don't count, since those rows aren't existing students
 // yet. Mirrors routes/changes.js's server-side findPendingStudentLock.
-const STUDENT_LOCK_TYPES = ["edit_student", "delete_student"];
+const STUDENT_LOCK_TYPES = ["edit_student", "delete_student", "move_student"];
 function findPendingStudentLock(pendingChanges, studentId) {
   for (const c of pendingChanges) {
     if (c.status !== "pending" && c.status !== "sent_back") continue;
@@ -2174,6 +2376,9 @@ function findPendingStudentLock(pendingChanges, studentId) {
     if (c.type === "sync_class_students") {
       if (c.payload?.edits?.some((e) => e.studentId === studentId)) return c;
       if (c.payload?.removals?.some((r) => r.studentId === studentId)) return c;
+    }
+    if (c.type === "move_students_batch") {
+      if (c.payload?.moves?.some((m) => m.studentId === studentId)) return c;
     }
   }
   return null;
@@ -2194,6 +2399,7 @@ function describePendingStudentLock(lock, studentId) {
   if (!lock) return null;
   if (lock.type === "delete_student") return "delete";
   if (lock.type === "edit_student") return "edit";
+  if (lock.type === "move_student" || lock.type === "move_students_batch") return "move";
   if (lock.type === "sync_class_students") {
     return lock.payload?.removals?.some((r) => r.studentId === studentId) ? "sync removal" : "sync edit";
   }
@@ -2215,12 +2421,13 @@ function PendingLockBadge({ lock, studentId }) {
 // call's response — and the refetch after it — lands and state.pendingChanges
 // actually reflects the new lock; they're not what makes the real repro
 // (click delete, wait several seconds, click delete again) impossible.
-function StudentRowActions({ s, lock, deletingIds, isEditingBusy, onEdit, onDelete }) {
+function StudentRowActions({ s, lock, deletingIds, isEditingBusy, onEdit, onMove, onDelete }) {
   const deleting = deletingIds.has(s.id);
   const rowBusy = !!lock || deleting || isEditingBusy;
   return (
     <>
       <button onClick={onEdit} disabled={rowBusy} className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400"><Pencil size={14} /></button>
+      <button onClick={onMove} disabled={rowBusy} className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400"><ArrowRightLeft size={14} /></button>
       <button onClick={onDelete} disabled={rowBusy} className="text-slate-400 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-400">
         {deleting ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
       </button>
@@ -2238,6 +2445,30 @@ function StudentsAdmin({ state, runAction }) {
   const [editing, setEditing] = useState(null);
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState("");
+  const [moving, setMoving] = useState(null); // student currently in the single-Move modal, or null
+  // Bulk move: which student ids are checked (spans whatever's currently
+  // visible — a class group's own "select all" only ever touches its OWN
+  // students, but nothing clears a different group's selection, so in
+  // principle a batch could span groups; the Move button next to each
+  // group only ever sends THAT group's selected ids, never the full set).
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkMoveIds, setBulkMoveIds] = useState(null); // string[] | null — set while the bulk Move modal is open
+  const toggleSelected = (id) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleGroupSelected = (groupStudents) => {
+    // Locked students (already mid-flight on some other change) can't be
+    // selected at all — same lock that disables their row actions.
+    const selectableIds = groupStudents.filter((s) => !findPendingStudentLock(state.pendingChanges, s.id)).map((s) => s.id);
+    const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of selectableIds) { if (allSelected) next.delete(id); else next.add(id); }
+      return next;
+    });
+  };
   // Student ids with a delete request currently in flight — guards the
   // per-row icons the same way ApprovalActions guards AO's card buttons:
   // the clicked (delete) icon shows a spinner, its sibling (edit) on the
@@ -2439,8 +2670,29 @@ function StudentsAdmin({ state, runAction }) {
         <EmptyNote text={q ? "No students match your search." : "No students yet."} />
       ) : (
         <div className="space-y-3">
-          {visibleGroups.map((g) => (
+          {visibleGroups.map((g) => {
+            const selectableStudents = g.filteredStudents.filter((s) => !findPendingStudentLock(state.pendingChanges, s.id));
+            const groupSelectedIds = g.filteredStudents.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
+            const allGroupSelected = selectableStudents.length > 0 && selectableStudents.every((s) => selectedIds.has(s.id));
+            return (
             <Card key={g.id} className="p-3">
+              {/* Selection toolbar lives OUTSIDE Collapsible's header — that
+                  header renders inside a <button> (see Collapsible above),
+                  so a checkbox/button here would be an invalid nested
+                  interactive element. */}
+              {selectableStudents.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-500">
+                    <input type="checkbox" checked={allGroupSelected} onChange={() => toggleGroupSelected(selectableStudents)} />
+                    Select all in {g.name}
+                  </label>
+                  {groupSelectedIds.length > 0 && (
+                    <Btn size="sm" variant="outline" onClick={() => setBulkMoveIds(groupSelectedIds)}>
+                      <ArrowRightLeft size={12} /> Move {pluralize(groupSelectedIds.length, "student")}
+                    </Btn>
+                  )}
+                </div>
+              )}
               <Collapsible
                 forceOpen={!!q}
                 header={
@@ -2453,13 +2705,14 @@ function StudentsAdmin({ state, runAction }) {
                 <Card className="hidden overflow-x-auto md:block">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                      <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Tag</th><th className="px-4 py-2">Room</th><th className="px-4 py-2"></th></tr>
+                      <tr><th className="px-4 py-2"></th><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Tag</th><th className="px-4 py-2">Room</th><th className="px-4 py-2"></th></tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {g.filteredStudents.map((s) => {
                         const lock = findPendingStudentLock(state.pendingChanges, s.id);
                         return (
                           <tr key={s.id}>
+                            <td className="px-4 py-2"><input type="checkbox" checked={selectedIds.has(s.id)} disabled={!!lock} onChange={() => toggleSelected(s.id)} /></td>
                             <td className="px-4 py-2 text-slate-600">{s.roll}</td>
                             <td className="px-4 py-2">
                               <div className="font-medium text-slate-800">{s.name}</div>
@@ -2475,6 +2728,7 @@ function StudentsAdmin({ state, runAction }) {
                                   deletingIds={deletingIds}
                                   isEditingBusy={editing?.id === s.id && editBusy}
                                   onEdit={() => openEdit(s)}
+                                  onMove={() => setMoving(s)}
                                   onDelete={() => submitDelete(s)}
                                 />
                               </div>
@@ -2491,7 +2745,10 @@ function StudentsAdmin({ state, runAction }) {
                     return (
                     <div key={s.id} className="rounded-lg border border-slate-200 p-3 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="font-display text-xs text-slate-400">{s.roll}</span>
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" checked={selectedIds.has(s.id)} disabled={!!lock} onChange={() => toggleSelected(s.id)} />
+                          <span className="font-display text-xs text-slate-400">{s.roll}</span>
+                        </label>
                         <div className="flex gap-2">
                           <StudentRowActions
                             s={s}
@@ -2499,6 +2756,7 @@ function StudentsAdmin({ state, runAction }) {
                             deletingIds={deletingIds}
                             isEditingBusy={editing?.id === s.id && editBusy}
                             onEdit={() => openEdit(s)}
+                            onMove={() => setMoving(s)}
                             onDelete={() => submitDelete(s)}
                           />
                         </div>
@@ -2515,7 +2773,8 @@ function StudentsAdmin({ state, runAction }) {
                 </div>
               </Collapsible>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -2536,6 +2795,18 @@ function StudentsAdmin({ state, runAction }) {
             </div>
           </Card>
         </div>
+      )}
+      {moving && <MoveStudentModal state={state} student={moving} runAction={runAction} onClose={() => setMoving(null)} />}
+      {bulkMoveIds && (
+        <BulkMoveModal
+          state={state}
+          studentIds={bulkMoveIds}
+          runAction={runAction}
+          onClose={() => {
+            setSelectedIds((prev) => { const next = new Set(prev); bulkMoveIds.forEach((id) => next.delete(id)); return next; });
+            setBulkMoveIds(null);
+          }}
+        />
       )}
     </div>
   );
@@ -3243,9 +3514,10 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
           const isBatch = c.type === "structure_batch";
           const isStudentChange = c.type === "add_student" || c.type === "bulk_add_students";
           const isSyncChange = c.type === "sync_class_students";
+          const isMoveChange = c.type === "move_student" || c.type === "move_students_batch";
           const sentBack = c.status === "sent_back";
           return (
-            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${(isBatch || isStudentChange || isSyncChange) && sentBack ? "border-amber-200" : ""}`}>
+            <div key={c.id} className={`rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm ${(isBatch || isStudentChange || isSyncChange || isMoveChange) && sentBack ? "border-amber-200" : ""}`}>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-slate-700">{isBatch ? `Structure batch — ${c.summary}` : c.summary}</span>
                 <Badge tone={myChangeTone(c.status)}>{c.status.replace("_", " ")}</Badge>
@@ -3274,6 +3546,13 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
                   >
                     <FileDown size={12} /> Download current export
                   </Btn>
+                </div>
+              )}
+              {isMoveChange && sentBack && (
+                <div className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2">
+                  <p className="text-xs text-amber-800">
+                    <span className="font-medium">AO's reason:</span> {c.reason} — a move isn't edited in place: redo it from Manage students once you've decided what to change.
+                  </p>
                 </div>
               )}
             </div>

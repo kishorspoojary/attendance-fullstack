@@ -113,6 +113,10 @@ export const api = {
   getStudentsByClass: () => request("/students/by-class"),
   getStudentsByHostel: () => request("/students/by-hostel"),
 
+  // ---- Student moves (Database Manager proposes, AO approves via approveChange above) ----
+  moveStudent: (studentId, body) => request(`/students/${studentId}/move`, { method: "POST", body }),
+  moveStudentsBatch: (body) => request("/students/move-batch", { method: "POST", body }),
+
   // ---- Staff directory (AO/Principal: full; Coordinator: Lecturers only — server-enforced) ----
   getStaffDirectory: () => request("/staff-directory"),
 
