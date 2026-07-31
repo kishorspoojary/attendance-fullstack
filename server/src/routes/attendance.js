@@ -322,3 +322,31 @@ attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COOR
   }
   res.json({ autoPassedCount: count, stillBlockedOnDO: stillBlocked });
 });
+
+// --------------------------------------------------------------------------
+// Date-range query — additive alongside GET /state (routes/state.js), which
+// still returns the whole AttendanceRecord table unfiltered for every other
+// screen in the app. This one's for anything that needs a bounded slice
+// (trend/long-leave calculations) without loading everything. `date` is a
+// zero-padded "YYYY-MM-DD" string (see schema.prisma's comment on
+// AttendanceRecord.date), so a plain string comparison sorts identically to
+// a real date comparison — no need to parse into Date objects here or in
+// the Prisma query itself. Returns the same
+// { [date]: { [classId]: AttendanceRecord } } shape /state builds, just
+// under an "attendance" key scoped to [from, to].
+// --------------------------------------------------------------------------
+attendanceRouter.get("/attendance", requireAuth, async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: "from and to are required (YYYY-MM-DD)" });
+  if (from > to) return res.status(400).json({ error: "from must be on or before to" });
+
+  const rows = await prisma.attendanceRecord.findMany({ where: { date: { gte: from, lte: to } } });
+
+  const attendance = {};
+  for (const row of rows) {
+    attendance[row.date] = attendance[row.date] || {};
+    attendance[row.date][row.classId] = row;
+  }
+
+  res.json({ attendance });
+});
