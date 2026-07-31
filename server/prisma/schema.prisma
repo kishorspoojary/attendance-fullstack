@@ -232,8 +232,8 @@ model AttendanceRecord {
   class   Classroom @relation(fields: [classId], references: [id])
 
   headcount      Int? // physical count the DO enters before they can approve
-  wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason} }
-  laiAbsences    Json @default("{}") // { studentId: {by, byName, at, reason: null} } — LAI never sets a reason
+  wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason, isLocal} } — isLocal is a snapshot of the student's boarding status at the moment they were marked absent, not a live lookup
+  laiAbsences    Json @default("{}") // { studentId: {by, byName, at, reason: null, isLocal} } — LAI never sets a reason; isLocal snapshot same as wardenAbsences
 
   doConfirmed Json @default("{}") // { studentId: {by, byName, at} } — Window 1: confirmed absent in the classroom
   doVerified  Json @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — Window 2: reason after calling

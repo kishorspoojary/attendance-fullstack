@@ -71,7 +71,7 @@ attendanceRouter.post(
     const bucket = { ...(record[field] || {}) };
     const effectiveReason = req.user.role === "LAI" ? null : reason || null;
     if (!effectiveReason) delete bucket[studentId];
-    else bucket[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs(), reason: effectiveReason };
+    else bucket[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs(), reason: effectiveReason, isLocal: student.isLocal };
 
     const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { [field]: bucket } });
     res.json({ record: updated });
