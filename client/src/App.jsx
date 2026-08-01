@@ -879,7 +879,7 @@ export default function App() {
             // The whole "router": exactly one of these renders, chosen by
             // matching `activeTab` against the id strings in ROLE_TABS above.
             <>
-              {activeTab === "dashboard" && <PrincipalDashboard state={state} date={date} />}
+              {activeTab === "dashboard" && <PrincipalHeroDashboard state={state} date={date} />}
               {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
               {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
@@ -931,6 +931,91 @@ function Stat({ label, value, tone = "slate" }) {
     </div>
   );
 }
+// Bucket thresholds for the Principal hero dashboard's segmented attendance
+// bar. Colors reuse the app's existing tone vocabulary (emerald/amber/rose —
+// see TONES/STAT_TONES above) rather than inventing a new palette.
+function attendanceBucket(pct) {
+  if (pct >= 90) return "emerald";
+  if (pct >= 75) return "amber";
+  return "rose";
+}
+const BUCKET_ORDER = ["emerald", "amber", "rose"];
+const BUCKET_RANGE_LABEL = { emerald: "≥90%", amber: "75-89%", rose: "<75%" };
+const BUCKET_BAR_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
+const BUCKET_DOT_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
+
+// Per-class attendance % for one date — 1 - absentCount/roster, reusing the
+// same "union of wardenAbsences/laiAbsences keys" absentee count
+// PrincipalDashboard already uses. Classes with no students enrolled are
+// left out entirely: there's no percentage to report for an empty roster.
+function classAttendanceForDate(state, classesInScope, day) {
+  return classesInScope
+    .map((c) => {
+      const r = day[c.id] || emptyRecord();
+      const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
+      const roster = state.students.filter((s) => s.classId === c.id).length;
+      if (roster === 0) return null;
+      const pct = ((roster - absentCount) / roster) * 100;
+      return { c, r, absentCount, roster, pct, bucket: attendanceBucket(pct) };
+    })
+    .filter(Boolean);
+}
+
+// Proportional-width horizontal bar, one segment per bucket, plus a legend
+// with counts. `rows` is classAttendanceForDate's output (roster > 0 only).
+function SegmentedAttendanceBar({ rows }) {
+  const total = rows.length;
+  const counts = { emerald: 0, amber: 0, rose: 0 };
+  rows.forEach((r) => counts[r.bucket]++);
+  return (
+    <div>
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        {BUCKET_ORDER.map((b) => counts[b] > 0 && (
+          <div key={b} className={BUCKET_BAR_CLASS[b]} style={{ width: `${(counts[b] / total) * 100}%` }} />
+        ))}
+      </div>
+      <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-500">
+        {BUCKET_ORDER.map((b) => (
+          <span key={b} className="flex items-center gap-1.5">
+            <span className={`h-2 w-2 rounded-full ${BUCKET_DOT_CLASS[b]}`} />
+            {counts[b]} class{counts[b] === 1 ? "" : "es"} <span className="text-slate-400">{BUCKET_RANGE_LABEL[b]}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// The Principal's home view — a mobile-first "hero" dashboard (institution
+// attendance %, trend, segmented class breakdown, and a "needs attention"
+// feed), built up over several steps. Deliberately a separate component from
+// PrincipalDashboard below, which stays in place for the Lecturer's "status"
+// tab (a different, floor-scoped, table-based view).
+function PrincipalHeroDashboard({ state, date }) {
+  const [viewDate, setViewDate] = useState(date);
+  const day = state.attendance[viewDate] || {};
+  const classRows = classAttendanceForDate(state, state.classes, day);
+  const isToday = viewDate === date;
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle icon={LayoutDashboard} title="Attendance" subtitle={isToday ? `Today — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`} />
+        <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+      </div>
+
+      <Card className="p-4">
+        <p className="mb-3 text-sm font-medium text-slate-700">Classes by attendance</p>
+        {classRows.length === 0 ? (
+          <EmptyNote text="No classes with students yet." />
+        ) : (
+          <SegmentedAttendanceBar rows={classRows} />
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
