@@ -115,11 +115,25 @@ async function resolveCollegeFloor(client, entry, seenNames) {
   return { kind: "new", name };
 }
 
+// Each entry is normally {name, year}, year optional — but also accepts a
+// plain string (name only) for backward compatibility with structure_batch
+// payloads drafted before the year field existed and still sitting in the
+// approval queue (e.g. sent back for edits, not yet resubmitted).
+function normClassroomEntry(raw) {
+  if (typeof raw === "string") return { name: normName(raw), year: null };
+  const name = normName(raw?.name);
+  const year = raw?.year == null || raw.year === "" ? null : Number(raw.year);
+  if (year != null && (!Number.isInteger(year) || year < 1 || year > 4)) {
+    throw new Error(`Class "${name || "(unnamed)"}" has an invalid year — must be 1-4, or left blank`);
+  }
+  return { name, year };
+}
+
 async function resolveClassrooms(client, classroomsIn, floor) {
   const seen = new Set();
   const classrooms = [];
   for (const raw of Array.isArray(classroomsIn) ? classroomsIn : []) {
-    const name = normName(raw);
+    const { name, year } = normClassroomEntry(raw);
     if (!name) continue;
     const k = key(name);
     if (seen.has(k)) throw new Error(`Duplicate class "${name}" under college floor "${floor.name}"`);
@@ -128,7 +142,7 @@ async function resolveClassrooms(client, classroomsIn, floor) {
       if (existing) throw new Error(`College floor "${floor.name}" already has a class named "${name}"`);
     }
     seen.add(k);
-    classrooms.push(name);
+    classrooms.push({ name, year });
   }
   return classrooms;
 }
@@ -202,7 +216,7 @@ export async function createFromStructurePlan(tx, plan) {
   for (const cf of plan.collegeFloors) {
     const floorId = cf.kind === "new" ? (await tx.collegeFloor.create({ data: { name: cf.name } })).id : cf.id;
     if (cf.classrooms.length > 0) {
-      await tx.classroom.createMany({ data: cf.classrooms.map((name) => ({ name, collegeFloorId: floorId })) });
+      await tx.classroom.createMany({ data: cf.classrooms.map(({ name, year }) => ({ name, year, collegeFloorId: floorId })) });
     }
   }
 }

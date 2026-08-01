@@ -1187,7 +1187,11 @@ function StructureBatchTree({ payload }) {
           <div className="flex items-center gap-2 font-medium text-slate-700">
             {cf.name || "(unnamed college floor)"} {cf.existingCollegeFloorId && <Badge tone="slate">existing</Badge>}
           </div>
-          {cf.classrooms?.length > 0 && <div className="ml-4 mt-1 text-xs text-slate-500">Classes: {cf.classrooms.join(", ")}</div>}
+          {cf.classrooms?.length > 0 && (
+            <div className="ml-4 mt-1 text-xs text-slate-500">
+              Classes: {cf.classrooms.map((c) => (typeof c === "string" ? c : c.year ? `${c.name} (Year ${c.year})` : c.name)).join(", ")}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -2861,7 +2865,11 @@ function payloadToDraft(payload) {
       })),
     })),
     collegeFloors: (payload?.collegeFloors || []).map((cf) => ({
-      _id: uid(), existingCollegeFloorId: cf.existingCollegeFloorId || null, name: cf.name || "", classrooms: [...(cf.classrooms || [])],
+      _id: uid(), existingCollegeFloorId: cf.existingCollegeFloorId || null, name: cf.name || "",
+      // Classrooms used to be plain strings (pre-year-field batches still
+      // sitting in the queue as sent-back structure_batch changes) — normalize
+      // either shape to {name, year} so the draft only ever deals with one.
+      classrooms: (cf.classrooms || []).map((c) => (typeof c === "string" ? { name: c, year: null } : { name: c.name, year: c.year ?? null })),
     })),
   };
 }
@@ -2935,6 +2943,52 @@ function ListChipInput({ items, onChange, placeholder }) {
         <Btn size="sm" variant="outline" onClick={commit} disabled={preview.length === 0}><Plus size={12} /></Btn>
       </div>
       {preview.length > 0 && <p className="mt-1 text-[11px] text-slate-400">Will add: {preview.join(", ")}</p>}
+    </div>
+  );
+}
+
+// Class/batch entry for a college floor draft — unlike rooms (a single
+// string is enough), a class needs a name plus an optional year, so it
+// gets its own chip input rather than reusing ListChipInput. Year is
+// deliberately optional and non-blocking: not every class is organized by
+// year, and the DB Manager shouldn't be forced to pick one to add a class.
+function ClassroomChipInput({ items, onChange }) {
+  const [name, setName] = useState("");
+  const [year, setYear] = useState("");
+
+  const commit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (items.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) { setName(""); setYear(""); return; }
+    onChange([...items, { name: trimmed, year: year ? Number(year) : null }]);
+    setName(""); setYear("");
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((c, i) => (
+          <span key={`${c.name}-${i}`} className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+            {c.name}
+            <Badge tone={c.year ? "blue" : "slate"}>{c.year ? `Year ${c.year}` : "no year"}</Badge>
+            <button onClick={() => onChange(items.filter((_, idx) => idx !== i))} className="text-slate-400 hover:text-rose-600" aria-label={`Remove ${c.name}`}><X size={11} /></button>
+          </span>
+        ))}
+        {items.length === 0 && <span className="text-xs text-slate-400">None yet</span>}
+      </div>
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <input value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+          placeholder="Class/batch name" className={`${inputCls} text-xs`} />
+        <select value={year} onChange={(e) => setYear(e.target.value)} className={`${inputCls} w-auto text-xs`} aria-label="Year (optional)">
+          <option value="">No year</option>
+          <option value="1">Year 1</option>
+          <option value="2">Year 2</option>
+          <option value="3">Year 3</option>
+          <option value="4">Year 4</option>
+        </select>
+        <Btn size="sm" variant="outline" onClick={commit} disabled={!name.trim()}><Plus size={12} /></Btn>
+      </div>
     </div>
   );
 }
@@ -3023,7 +3077,7 @@ function CollegeFloorDraftCard({ floor, onChange, onRemove }) {
         </div>
         <button onClick={onRemove} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label="Remove college floor"><Trash2 size={14} /></button>
       </div>
-      <div className="mt-3"><ListChipInput items={floor.classrooms} onChange={(classrooms) => onChange({ ...floor, classrooms })} placeholder="Class/batch name, comma separated" /></div>
+      <div className="mt-3"><ClassroomChipInput items={floor.classrooms} onChange={(classrooms) => onChange({ ...floor, classrooms })} /></div>
     </Card>
   );
 }

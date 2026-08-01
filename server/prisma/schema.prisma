@@ -133,6 +133,7 @@ model CollegeFloor {
 model Classroom {
   id             String             @id @default(cuid())
   name           String
+  year           Int? // 1-4, optional — not every class is year-based, and this was retrofitted after existing classes already had names with no structured year
   collegeFloorId String
   collegeFloor   CollegeFloor       @relation(fields: [collegeFloorId], references: [id])
   students       Student[]
