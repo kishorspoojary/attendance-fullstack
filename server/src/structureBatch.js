@@ -123,8 +123,8 @@ function normClassroomEntry(raw) {
   if (typeof raw === "string") return { name: normName(raw), year: null };
   const name = normName(raw?.name);
   const year = raw?.year == null || raw.year === "" ? null : Number(raw.year);
-  if (year != null && (!Number.isInteger(year) || year < 1 || year > 4)) {
-    throw new Error(`Class "${name || "(unnamed)"}" has an invalid year — must be 1-4, or left blank`);
+  if (year != null && (!Number.isInteger(year) || year < 1 || year > 2)) {
+    throw new Error(`Class "${name || "(unnamed)"}" has an invalid year — must be 1-2, or left blank`);
   }
   return { name, year };
 }

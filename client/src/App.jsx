@@ -2984,8 +2984,6 @@ function ClassroomChipInput({ items, onChange }) {
           <option value="">No year</option>
           <option value="1">Year 1</option>
           <option value="2">Year 2</option>
-          <option value="3">Year 3</option>
-          <option value="4">Year 4</option>
         </select>
         <Btn size="sm" variant="outline" onClick={commit} disabled={!name.trim()}><Plus size={12} /></Btn>
       </div>
