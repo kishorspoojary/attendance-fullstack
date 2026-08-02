@@ -62,13 +62,36 @@ function priorStageKey(stageKey) {
   const idx = STAGES.findIndex((s) => s.key === stageKey);
   return idx > 0 ? STAGES[idx - 1].key : null;
 }
-function recordTag(rec) {
+// Per-classroom-per-session status for the floor status board (Coordinator's
+// and Lecturer's "status" tab, PrincipalDashboard below). Finer-grained than
+// a plain stage index: idx===0 alone spans everything from "nobody's
+// touched this yet" to "DO has everything they need and just hasn't clicked
+// approve," which is too coarse for a board someone checks throughout the
+// day. Every state here is derived from fields the pipeline already
+// writes — nothing new is tracked.
+function classroomStatus(rec) {
+  const combined = { ...(rec.wardenAbsences || {}), ...(rec.laiAbsences || {}) };
+  const ids = Object.keys(combined);
+  const hasAbsentees = ids.length > 0;
   const idx = currentStageIndex(rec);
-  const published = idx === STAGES.length || rec.forcedPublish;
-  if (!published) return { label: `Pending — ${STAGES[idx].pendingLabel}`, tone: "amber" };
-  if (idx === STAGES.length) return { label: "Verified", tone: "emerald" };
-  const missing = STAGES.slice(idx).map((s) => s.pendingLabel).join(", ");
-  return { label: `Auto-passed — missing: ${missing}`, tone: "rose" };
+  const sentBack = !!rec.sentBack;
+
+  if (rec.forcedPublish && idx < STAGES.length) {
+    const missing = STAGES.slice(idx).map((s) => s.pendingLabel).join(", ");
+    return { key: "auto_passed", label: `Auto-passed — missing: ${missing}`, tone: "rose" };
+  }
+  if (idx === STAGES.length) return { key: "published", label: "Published", tone: "emerald" };
+  if (idx === 2) return { key: "awaiting_coordinator", label: "Awaiting Coordinator", tone: "blue" };
+  if (idx === 1) return { key: "awaiting_lecturer", label: sentBack ? "Sent back to you" : "Awaiting you", tone: sentBack ? "rose" : "blue" };
+
+  // idx === 0 — everything before the DO's own approval, broken down further.
+  if (!hasAbsentees && rec.headcount == null) return { key: "not_started", label: "Not started", tone: "slate" };
+  const allConfirmed = !hasAbsentees || ids.every((sid) => rec.doConfirmed?.[sid]);
+  const allVerified = !hasAbsentees || ids.every((sid) => rec.doVerified?.[sid]);
+  if (rec.headcount != null && allConfirmed && allVerified) {
+    return { key: "awaiting_do", label: "Ready for DO approval", tone: "amber" };
+  }
+  return { key: "marking", label: sentBack ? "Sent back — being redone" : "Marking in progress", tone: sentBack ? "rose" : "slate" };
 }
 function emptyRecord() {
   return {
@@ -1563,7 +1586,8 @@ function PrincipalHeroDashboard({ state, date }) {
 
 function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
-  const day = sessionScoped(state.attendance[viewDate]);
+  const [session, setSession] = useState(DEFAULT_SESSION);
+  const day = sessionScoped(state.attendance[viewDate], session);
   const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
   const rows = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
@@ -1574,7 +1598,17 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Published straight to you once Coordinator approves — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`)} />
-        <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+        </div>
+      </div>
+      <div className="mb-4 inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+        {SESSION_TABS.map((s) => (
+          <button key={s.key} onClick={() => setSession(s.key)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${session === s.key ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+            {s.label}
+          </button>
+        ))}
       </div>
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Classes" value={rows.length} />
@@ -1590,12 +1624,12 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
           <tbody className="divide-y divide-slate-100">
             {rows.map(({ c, r }) => {
               const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
-              const tag = recordTag(r);
+              const status = classroomStatus(r);
               return (
                 <tr key={c.id}>
                   <td className="px-4 py-2.5 font-medium text-slate-800">{c.name}</td>
                   <td className="px-4 py-2.5 text-slate-600">{absentCount}</td>
-                  <td className="px-4 py-2.5"><Badge tone={tag.tone}>{tag.label}</Badge></td>
+                  <td className="px-4 py-2.5"><Badge tone={status.tone}>{status.label}</Badge></td>
                 </tr>
               );
             })}
