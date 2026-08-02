@@ -27,7 +27,7 @@ import {
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
   CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
-  TrendingUp, TrendingDown, Minus, Home, ArrowLeft,
+  TrendingUp, TrendingDown, Minus, Home, ArrowLeft, ClipboardList,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -824,6 +824,7 @@ export default function App() {
   const ROLE_TABS = {
     PRINCIPAL: [
       { id: "dashboard", label: "Daily report", icon: LayoutDashboard },
+      { id: "classwise", label: "Classwise report", icon: ClipboardList },
       { id: "leadership", label: "Leadership accounts", icon: UserPlus },
       { id: "staffdirectory", label: "Staff directory", icon: BookUser },
     ],
@@ -837,6 +838,7 @@ export default function App() {
     COORDINATOR: [
       { id: "coordinator", label: "Attendance approvals", icon: ListChecks },
       { id: "status", label: "Attendance status", icon: LayoutDashboard },
+      { id: "classwise", label: "Classwise report", icon: ClipboardList },
       { id: "staffdirectory", label: "Staff directory", icon: BookUser },
     ],
     // Daily tasks first, setup/admin tasks last — reordered from the
@@ -932,6 +934,7 @@ export default function App() {
             // matching `activeTab` against the id strings in ROLE_TABS above.
             <>
               {activeTab === "dashboard" && <PrincipalHeroDashboard state={state} date={date} />}
+              {activeTab === "classwise" && <ClasswiseAbsenteeReport state={state} />}
               {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
               {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
@@ -4251,6 +4254,127 @@ function AbsenteesView({ state }) {
                     </div>
                   ))}
                 </div>
+              </Collapsible>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Date-range, per-class absentee breakdown for Principal/Coordinator —
+// aggregates GET /attendance's existing range shape (same endpoint
+// PrincipalHeroDashboard's trend/streak fetch already uses; no new backend
+// work needed) rather than a new day-by-day list. Same grouped/collapsible
+// visual pattern as AbsenteesView (DB Manager's single-day view) — each
+// class's collapsible content is a per-student absence tally across the
+// range instead of one day's raw list. Session-aware via the same
+// sessionScoped-adjacent toggle used everywhere since Phase 1/2 (here
+// applied per-record inline, since the aggregation walks every date in the
+// range rather than one already-resolved day).
+const CLASSWISE_DEFAULT_RANGE_DAYS = 6; // inclusive span of 7 days (today-6..today) — a default "past week" view
+
+function ClasswiseAbsenteeReport({ state }) {
+  const today = todayStr();
+  const [from, setFrom] = useState(shiftDateStr(today, -CLASSWISE_DEFAULT_RANGE_DAYS));
+  const [to, setTo] = useState(today);
+  const [session, setSession] = useState(DEFAULT_SESSION);
+  const [rangeData, setRangeData] = useState({ loading: true, data: {} });
+  const validRange = from <= to;
+
+  useEffect(() => {
+    if (!validRange) return;
+    let cancelled = false;
+    setRangeData({ loading: true, data: {} });
+    api.getAttendanceRange(from, to)
+      .then((resp) => { if (!cancelled) setRangeData({ loading: false, data: resp.attendance || {} }); })
+      .catch(() => { if (!cancelled) setRangeData({ loading: false, data: {} }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to, validRange]);
+
+  // Per class: every student absent on any date in range (this session),
+  // and how many of the range's recorded days they were absent on — the
+  // range equivalent of AbsenteesView's single-day per-student list.
+  const groups = state.classes
+    .map((c) => {
+      const roster = state.students.filter((s) => s.classId === c.id);
+      const tally = new Map(); // studentId -> count
+      let daysWithRecord = 0;
+      for (const date of Object.keys(rangeData.data)) {
+        const record = rangeData.data[date]?.[c.id]?.[session];
+        if (!record) continue;
+        daysWithRecord++;
+        const absentIds = new Set([...Object.keys(record.wardenAbsences || {}), ...Object.keys(record.laiAbsences || {})]);
+        absentIds.forEach((sid) => tally.set(sid, (tally.get(sid) || 0) + 1));
+      }
+      const students = [...tally.entries()]
+        .map(([sid, count]) => ({ student: roster.find((s) => s.id === sid), count }))
+        .filter((x) => x.student)
+        .sort((a, b) => b.count - a.count || a.student.roll.localeCompare(b.student.roll));
+      const totalAbsences = students.reduce((n, x) => n + x.count, 0);
+      const possible = roster.length * daysWithRecord;
+      const pct = possible > 0 ? ((possible - totalAbsences) / possible) * 100 : null;
+      return { id: c.id, name: c.name, daysWithRecord, students, totalAbsences, pct };
+    })
+    .filter((g) => g.students.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle icon={ClipboardList} title="Classwise absentee report" subtitle="Per-class absence tally over a date range." />
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="From"><input type="date" max={to} className={inputCls} value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
+          <Field label="To"><input type="date" max={today} className={inputCls} value={to} onChange={(e) => setTo(e.target.value)} /></Field>
+        </div>
+      </div>
+      <div className="mb-4 inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+        {SESSION_TABS.map((s) => (
+          <button key={s.key} onClick={() => setSession(s.key)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${session === s.key ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {!validRange ? (
+        <p className="text-sm text-rose-600">"From" must be on or before "To".</p>
+      ) : rangeData.loading ? (
+        <div className="grid h-40 place-items-center text-slate-400"><Loader2 className="animate-spin" size={18} /></div>
+      ) : groups.length === 0 ? (
+        <EmptyNote text="No absentees recorded in this range." />
+      ) : (
+        <div className="space-y-3">
+          {groups.map((g) => (
+            <Card key={g.id} className="p-3">
+              <Collapsible
+                header={
+                  <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium text-slate-800">{g.name}</span>
+                    <div className="flex items-center gap-2">
+                      {g.pct != null && <span className="text-xs text-slate-400">{Math.round(g.pct)}% present</span>}
+                      <Badge tone="amber">{g.totalAbsences} absence{g.totalAbsences === 1 ? "" : "s"}</Badge>
+                    </div>
+                  </div>
+                }
+              >
+                <Card className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr><th className="px-4 py-2">Roll</th><th className="px-4 py-2">Name</th><th className="px-4 py-2">Times absent</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {g.students.map(({ student, count }) => (
+                        <tr key={student.id}>
+                          <td className="px-4 py-2 text-slate-600">{student.roll}</td>
+                          <td className="px-4 py-2 font-medium text-slate-800">{student.name}</td>
+                          <td className="px-4 py-2 text-slate-600">{count} / {g.daysWithRecord}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Card>
               </Collapsible>
             </Card>
           ))}
