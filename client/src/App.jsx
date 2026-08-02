@@ -1063,6 +1063,63 @@ function HeroAttendanceNumber({ pct, delta, loadingTrend }) {
   );
 }
 
+// How many trailing days to fetch for the streak scan, beyond the 5-day
+// threshold itself — enough margin (3 extra days) that a typical 5-7 day
+// streak gets its exact length, while a streak that's still unbroken at
+// the oldest fetched date gets flagged `capped` (see computeLongLeaveStreaks)
+// rather than silently under-reported.
+const LONG_LEAVE_MIN_DAYS = 5;
+const LONG_LEAVE_WINDOW_DAYS = 7;
+
+// Scans a fetched attendance window (GET /attendance's {[date]: {[classId]:
+// record}} shape) for students on a 5+ consecutive day absence streak
+// ending at `viewDate` — i.e. currently, actively absent, not a past streak
+// that already resolved. Walks backward one calendar day at a time from
+// viewDate; a day with NO attendance record for the student's class breaks
+// the streak immediately, per this feature's design decision: "no record"
+// means nobody marked attendance that day, which is ambiguous, not proof of
+// presence, and must never be treated as a skippable gap.
+//
+// Deliberately scans only wardenAbsences/laiAbsences, never
+// Student.awayReason/awaySince — those are a different, disjoint concept: a
+// manually-declared, open-ended leave that never generates daily
+// AttendanceRecord entries at all (WardenScreen shows "away" students in
+// their own banner and never asks a Warden to mark them absent day to day —
+// see WardenScreen's `away`/`present` split). A student who's actively
+// "away" for 6 days will NOT show up here, since they were never entered
+// into any day's absence map. Flagged back to the requester as a gap worth
+// a separate, much cheaper alert type (no date range needed — it's already
+// on Student) rather than folded into this scan.
+//
+// Also uses the student's CURRENT classId to look up every historical
+// date, since there's no historical class-membership snapshot anywhere in
+// this schema (a pre-existing limitation, not new to this function).
+function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartDate) {
+  const results = [];
+  for (const student of state.students) {
+    const todayRecord = attendanceWindow[viewDate]?.[student.classId];
+    const absentToday = !!todayRecord && (!!todayRecord.wardenAbsences?.[student.id] || !!todayRecord.laiAbsences?.[student.id]);
+    if (!absentToday) continue;
+
+    let streak = 0;
+    let capped = false;
+    let d = viewDate;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const rec = attendanceWindow[d]?.[student.classId];
+      if (!rec) break; // no record for this date — ambiguous, breaks the streak
+      const wasAbsent = !!rec.wardenAbsences?.[student.id] || !!rec.laiAbsences?.[student.id];
+      if (!wasAbsent) break;
+      streak++;
+      if (d === windowStartDate) { capped = true; break; } // can't see further back than what was fetched
+      d = shiftDateStr(d, -1);
+    }
+
+    if (streak >= LONG_LEAVE_MIN_DAYS) results.push({ student, streak, capped });
+  }
+  return results.sort((a, b) => b.streak - a.streak);
+}
+
 function PrincipalHeroDashboard({ state, date }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
@@ -1070,27 +1127,30 @@ function PrincipalHeroDashboard({ state, date }) {
   const isToday = viewDate === date;
   const todayPct = aggregatePct(classRows);
 
-  // Trend comparison day is always "the day before whatever's being
-  // viewed", not hardcoded to real-world yesterday — so paging the date
-  // picker back through history still shows a sensible trend for that day.
+  // One fetch covers both the trend arrow (needs yesterday) and the
+  // long-leave scan (needs a trailing week) — the streak window already
+  // contains the trend's single comparison day, so there's no reason to
+  // make two round trips for two overlapping date ranges.
   const compareDate = shiftDateStr(viewDate, -1);
-  const [trend, setTrend] = useState({ loading: true, pct: null });
+  const windowStartDate = shiftDateStr(viewDate, -LONG_LEAVE_WINDOW_DAYS);
+  const [rangeData, setRangeData] = useState({ loading: true, data: {} });
 
   useEffect(() => {
     let cancelled = false;
-    setTrend({ loading: true, pct: null });
-    api.getAttendanceRange(compareDate, viewDate)
-      .then((resp) => {
-        if (cancelled) return;
-        const compareDay = resp.attendance?.[compareDate] || {};
-        setTrend({ loading: false, pct: aggregatePctFromRecordedOnly(state, state.classes, compareDay) });
-      })
-      .catch(() => { if (!cancelled) setTrend({ loading: false, pct: null }); });
+    setRangeData({ loading: true, data: {} });
+    api.getAttendanceRange(windowStartDate, viewDate)
+      .then((resp) => { if (!cancelled) setRangeData({ loading: false, data: resp.attendance || {} }); })
+      .catch(() => { if (!cancelled) setRangeData({ loading: false, data: {} }); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compareDate, viewDate]);
+  }, [windowStartDate, viewDate]);
 
-  const delta = todayPct != null && trend.pct != null ? Math.round(todayPct) - Math.round(trend.pct) : null;
+  const compareDay = rangeData.data[compareDate] || {};
+  const compareHasData = !!rangeData.data[compareDate];
+  const yesterdayPct = compareHasData ? aggregatePctFromRecordedOnly(state, state.classes, compareDay) : null;
+  const delta = todayPct != null && yesterdayPct != null ? Math.round(todayPct) - Math.round(yesterdayPct) : null;
+
+  const longLeaveStreaks = rangeData.loading ? [] : computeLongLeaveStreaks(state, viewDate, rangeData.data, windowStartDate);
 
   return (
     <div>
@@ -1100,15 +1160,32 @@ function PrincipalHeroDashboard({ state, date }) {
       </div>
 
       <Card className="mb-4 p-4">
-        <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={trend.loading} />
+        <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
-      <Card className="p-4">
+      <Card className="mb-4 p-4">
         <p className="mb-3 text-sm font-medium text-slate-700">Classes by attendance</p>
         {classRows.length === 0 ? (
           <EmptyNote text="No classes with students yet." />
         ) : (
           <SegmentedAttendanceBar rows={classRows} />
+        )}
+      </Card>
+
+      {/* Temporary raw rendering for this step — Step 4 folds this into the
+          combined "Needs your attention" feed alongside red-bucket classes. */}
+      <Card className="p-4">
+        <p className="mb-3 text-sm font-medium text-slate-700">Long-leave (5+ days) — debug view, replaced in Step 4</p>
+        {rangeData.loading ? (
+          <p className="text-xs text-slate-400">Loading...</p>
+        ) : longLeaveStreaks.length === 0 ? (
+          <EmptyNote text="No students on a 5+ day absence streak." />
+        ) : (
+          <ul className="space-y-1 text-sm text-slate-600">
+            {longLeaveStreaks.map(({ student, streak, capped }) => (
+              <li key={student.id}>{student.name} ({student.roll}) — {streak}{capped ? "+" : ""} days absent</li>
+            ))}
+          </ul>
         )}
       </Card>
     </div>
