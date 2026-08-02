@@ -1324,11 +1324,14 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
   const [row] = classAttendanceForDate(state, cls ? [cls] : [], day);
 
   // Roster-local search — scoped to this class only, separate from the
-  // dashboard's "jump to a class" search. Matching rows expand in place to
-  // show a 7-day history + all-time %; non-matching rows fade rather than
-  // disappearing, so a student's position in the roster stays visible.
+  // dashboard's "jump to a class" search. Search only filters/dims the
+  // list; it never expands a row on its own (a query like "a" would match
+  // both "Aarav" and "Diya", expanding both at once — search and expand
+  // are deliberately independent). Expand is a separate tap-to-toggle
+  // state, one row at a time, that works whether or not a search is active.
   const [rosterQuery, setRosterQuery] = useState("");
   const rq = rosterQuery.trim().toLowerCase();
+  const [expandedStudentId, setExpandedStudentId] = useState(null);
 
   const roster = state.students
     .filter((s) => s.classId === classId)
@@ -1390,10 +1393,15 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
                   const status = isAway ? { label: "Away", tone: "blue" } : isAbsent ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
                   const matches = !!rq && (student.name.toLowerCase().includes(rq) || student.roll.toLowerCase().includes(rq));
                   const faded = !!rq && !matches;
-                  const allTime = matches ? studentAllTimeStats(state, student, viewDate) : null;
+                  const expanded = expandedStudentId === student.id;
+                  const allTime = expanded ? studentAllTimeStats(state, student, viewDate) : null;
                   return (
-                    <li key={student.id} className={`rounded-lg bg-slate-50 px-3 py-2.5 text-sm transition-opacity ${faded ? "opacity-40" : ""}`}>
-                      <div className="flex items-center justify-between gap-2">
+                    <li key={student.id} className={`rounded-lg bg-slate-50 text-sm transition-opacity ${faded ? "opacity-40" : ""}`}>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedStudentId(expanded ? null : student.id)}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-100"
+                      >
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
                             <span className="font-medium text-slate-800">{student.name}</span>
@@ -1405,9 +1413,9 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
                           <Badge tone="slate">{student.isLocal ? "Day scholar" : "Hosteller"}</Badge>
                           <Badge tone={status.tone}>{status.label}</Badge>
                         </div>
-                      </div>
-                      {matches && (
-                        <div className="mt-2.5 border-t border-slate-200 pt-2.5">
+                      </button>
+                      {expanded && (
+                        <div className="border-t border-slate-200 px-3 pb-2.5 pt-2.5">
                           <div className="flex items-center gap-1">
                             {studentDayHistory(state, student, viewDate).map((d) => (
                               <span key={d.date} title={`${formatDMY(d.date)}: ${d.status}`} className={`h-3.5 w-3.5 shrink-0 rounded-sm ${HISTORY_SQUARE_CLASS[d.status]}`} />
