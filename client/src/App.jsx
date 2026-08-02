@@ -1261,6 +1261,45 @@ function ClassSearchBox({ classes, onSelect }) {
   );
 }
 
+const STUDENT_HISTORY_DAYS = 7;
+
+// Last STUDENT_HISTORY_DAYS days (oldest to newest, ending at viewDate) as
+// {date, status}, status one of "present" | "absent" | "none" — "none"
+// means no attendance record at all for this student's class that date,
+// kept distinct from both present and absent (not folded into either),
+// same ambiguous-gap treatment computeLongLeaveStreaks already applies to
+// the streak scan. Reads state.attendance directly — already the full,
+// unfiltered history (see GET /state) — no fetch needed.
+function studentDayHistory(state, student, viewDate) {
+  const days = [];
+  for (let i = STUDENT_HISTORY_DAYS - 1; i >= 0; i--) {
+    const date = shiftDateStr(viewDate, -i);
+    const record = state.attendance[date]?.[student.classId];
+    const status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id]) ? "absent" : "present";
+    days.push({ date, status });
+  }
+  return days;
+}
+
+// All-time %: present days / days with any record, scanning state.attendance
+// in full (through viewDate — a date beyond what's being viewed shouldn't
+// count toward "as of now"), the same way. Days with no record for this
+// class are excluded from the denominator entirely, not counted as present
+// or absent — per the same design decision as the streak scan.
+function studentAllTimeStats(state, student, viewDate) {
+  let present = 0, withRecord = 0;
+  for (const date of Object.keys(state.attendance)) {
+    if (date > viewDate) continue;
+    const record = state.attendance[date]?.[student.classId];
+    if (!record) continue;
+    withRecord++;
+    if (!(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id])) present++;
+  }
+  return { present, withRecord, pct: withRecord > 0 ? (present / withRecord) * 100 : null };
+}
+
+const HISTORY_SQUARE_CLASS = { present: "bg-emerald-500", absent: "bg-rose-500", none: "bg-slate-200" };
+
 // Full-screen (not an in-place expand) single-day roster view for one
 // class, reached via the search box or a feed item tap, closed via the
 // back button. Deliberately single-day only — no trend, no history, same
@@ -1283,6 +1322,13 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
   const day = state.attendance[viewDate] || {};
   const record = day[classId] || emptyRecord();
   const [row] = classAttendanceForDate(state, cls ? [cls] : [], day);
+
+  // Roster-local search — scoped to this class only, separate from the
+  // dashboard's "jump to a class" search. Matching rows expand in place to
+  // show a 7-day history + all-time %; non-matching rows fade rather than
+  // disappearing, so a student's position in the roster stays visible.
+  const [rosterQuery, setRosterQuery] = useState("");
+  const rq = rosterQuery.trim().toLowerCase();
 
   const roster = state.students
     .filter((s) => s.classId === classId)
@@ -1325,25 +1371,54 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
 
           <Card className="p-5">
             <p className="mb-4 text-sm font-semibold text-slate-700">Roster ({roster.length})</p>
+            {roster.length > 0 && (
+              <div className="relative mb-3">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={rosterQuery}
+                  onChange={(e) => setRosterQuery(e.target.value)}
+                  placeholder="Search this class by name or roll..."
+                  className={`${inputCls} py-2.5 pl-9`}
+                />
+              </div>
+            )}
             {roster.length === 0 ? (
               <EmptyNote text="No students enrolled in this class." />
             ) : (
               <ul className="space-y-2">
                 {roster.map(({ student, isAbsent, isAway, reason }) => {
                   const status = isAway ? { label: "Away", tone: "blue" } : isAbsent ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
+                  const matches = !!rq && (student.name.toLowerCase().includes(rq) || student.roll.toLowerCase().includes(rq));
+                  const faded = !!rq && !matches;
+                  const allTime = matches ? studentAllTimeStats(state, student, viewDate) : null;
                   return (
-                    <li key={student.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-sm">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-slate-800">{student.name}</span>
-                          <span className="text-xs text-slate-400">({student.roll})</span>
+                    <li key={student.id} className={`rounded-lg bg-slate-50 px-3 py-2.5 text-sm transition-opacity ${faded ? "opacity-40" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-medium text-slate-800">{student.name}</span>
+                            <span className="text-xs text-slate-400">({student.roll})</span>
+                          </div>
+                          {(isAbsent || isAway) && reason !== "—" && <p className="mt-0.5 text-xs text-slate-500">{reason}</p>}
                         </div>
-                        {(isAbsent || isAway) && reason !== "—" && <p className="mt-0.5 text-xs text-slate-500">{reason}</p>}
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <Badge tone="slate">{student.isLocal ? "Day scholar" : "Hosteller"}</Badge>
+                          <Badge tone={status.tone}>{status.label}</Badge>
+                        </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <Badge tone="slate">{student.isLocal ? "Day scholar" : "Hosteller"}</Badge>
-                        <Badge tone={status.tone}>{status.label}</Badge>
-                      </div>
+                      {matches && (
+                        <div className="mt-2.5 border-t border-slate-200 pt-2.5">
+                          <div className="flex items-center gap-1">
+                            {studentDayHistory(state, student, viewDate).map((d) => (
+                              <span key={d.date} title={`${formatDMY(d.date)}: ${d.status}`} className={`h-3.5 w-3.5 shrink-0 rounded-sm ${HISTORY_SQUARE_CLASS[d.status]}`} />
+                            ))}
+                            <span className="ml-1 text-[10px] text-slate-400">last {STUDENT_HISTORY_DAYS} days</span>
+                          </div>
+                          <p className="mt-1.5 text-xs text-slate-500">
+                            {allTime.withRecord > 0 ? `${Math.round(allTime.pct)}% all-time (${allTime.present}/${allTime.withRecord} days with a record)` : "No attendance history yet"}
+                          </p>
+                        </div>
+                      )}
                     </li>
                   );
                 })}
