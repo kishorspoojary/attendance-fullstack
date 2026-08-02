@@ -27,7 +27,7 @@ import {
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
   CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
-  TrendingUp, TrendingDown, Minus,
+  TrendingUp, TrendingDown, Minus, Home,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -1136,7 +1136,16 @@ function daysAway(awaySince, refDate) {
   return diff + 1;
 }
 
-const FEED_ITEM_DOT = { class: "bg-rose-500", streak: "bg-amber-500", away: "bg-slate-400" };
+// Per-type icon + tone. Streak severity isn't a separate field — with the
+// fetch window fixed at LONG_LEAVE_WINDOW_DAYS (7, i.e. an 8-day span),
+// `capped` only ever happens at exactly 8 days, so "8+/capped" and
+// "capped === true" are the same condition; no extra threshold needed.
+const FEED_ICON = { class: AlertTriangle, streak: Clock, away: Home };
+const FEED_TONE_CLASS = {
+  rose: "bg-rose-100 text-rose-600",
+  amber: "bg-amber-100 text-amber-600",
+  blue: "bg-blue-100 text-blue-600",
+};
 
 // Combines three attendance-only sources into one flat "needs attention"
 // feed — no approval-pipeline items (pending Coordinator sign-off, etc.),
@@ -1149,11 +1158,21 @@ function buildAttentionFeed(state, realToday, classRows, longLeaveStreaks, isTod
   const items = [];
 
   longLeaveStreaks.forEach(({ student, streak, capped }) => {
-    items.push({ key: `streak-${student.id}`, type: "streak", text: `${student.name} — ${streak}${capped ? "+" : ""} days absent` });
+    items.push({
+      key: `streak-${student.id}`, type: "streak", tone: capped ? "rose" : "amber",
+      text: `${student.name} — ${streak}${capped ? "+" : ""} days absent`,
+      subtext: capped ? "Capped at window edge — may be longer than shown" : streak === LONG_LEAVE_MIN_DAYS ? "Just crossed the long-leave threshold" : "Ongoing absence, no gap in the past week",
+      classId: student.classId,
+    });
   });
 
   classRows.filter((r) => r.bucket === "rose").sort((a, b) => a.pct - b.pct).forEach((r) => {
-    items.push({ key: `class-${r.c.id}`, type: "class", text: `${r.c.name} at ${Math.round(r.pct)}%` });
+    items.push({
+      key: `class-${r.c.id}`, type: "class", tone: "rose",
+      text: `${r.c.name} at ${Math.round(r.pct)}%`,
+      subtext: "Below the 75% attendance threshold",
+      classId: r.c.id,
+    });
   });
 
   if (isToday) {
@@ -1161,23 +1180,37 @@ function buildAttentionFeed(state, realToday, classRows, longLeaveStreaks, isTod
       .filter((s) => s.awayReason && daysAway(s.awaySince, realToday) >= LONG_LEAVE_MIN_DAYS)
       .sort((a, b) => daysAway(b.awaySince, realToday) - daysAway(a.awaySince, realToday))
       .forEach((s) => {
-        items.push({ key: `away-${s.id}`, type: "away", text: `${s.name} — ${daysAway(s.awaySince, realToday)} days away (${s.awayReason})` });
+        items.push({
+          key: `away-${s.id}`, type: "away", tone: "blue",
+          text: `${s.name} — ${daysAway(s.awaySince, realToday)} days away (${s.awayReason})`,
+          subtext: `On leave since ${formatDMY(s.awaySince)}`,
+          classId: s.classId,
+        });
       });
   }
 
   return items;
 }
 
+// Plain (non-tappable) for now — Step B adds tap-through to a class detail
+// view for items that reference one; kept out of this step since it's
+// styling-only.
 function AttentionFeed({ items }) {
   if (items.length === 0) return <EmptyNote text="Nothing needs your attention right now." />;
   return (
-    <ul className="space-y-2">
-      {items.map((item) => (
-        <li key={item.key} className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
-          <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${FEED_ITEM_DOT[item.type]}`} />
-          <span>{item.text}</span>
-        </li>
-      ))}
+    <ul className="space-y-2.5">
+      {items.map((item) => {
+        const Icon = FEED_ICON[item.type];
+        return (
+          <li key={item.key} className="flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+            <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${FEED_TONE_CLASS[item.tone]}`}><Icon size={15} /></span>
+            <span className="min-w-0">
+              <span className="block font-medium text-slate-800">{item.text}</span>
+              <span className="mt-0.5 block text-xs text-slate-400">{item.subtext}</span>
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -1227,12 +1260,12 @@ function PrincipalHeroDashboard({ state, date }) {
         <Field label="Date"><input type="date" max={date} className={`${inputCls} py-2.5 sm:w-auto`} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
       </div>
 
-      <Card className="mb-4 p-5">
+      <Card className="mb-5 p-5">
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
-      <Card className="mb-4 p-4">
-        <p className="mb-3 text-sm font-medium text-slate-700">Classes by attendance</p>
+      <Card className="mb-5 p-5">
+        <p className="mb-4 text-sm font-semibold text-slate-700">Classes by attendance</p>
         {classRows.length === 0 ? (
           <EmptyNote text="No classes with students yet." />
         ) : (
@@ -1240,8 +1273,11 @@ function PrincipalHeroDashboard({ state, date }) {
         )}
       </Card>
 
-      <Card className="p-4">
-        <p className="mb-3 text-sm font-medium text-slate-700">Needs your attention</p>
+      <Card className="p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <p className="text-sm font-semibold text-slate-700">Needs your attention</p>
+          {feedItems.length > 0 && <Badge tone="rose">{feedItems.length}</Badge>}
+        </div>
         {rangeData.loading ? <p className="text-xs text-slate-400">Loading...</p> : <AttentionFeed items={feedItems} />}
       </Card>
     </div>
