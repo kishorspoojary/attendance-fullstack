@@ -27,6 +27,7 @@ import {
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
   CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
+  TrendingUp, TrendingDown, Minus,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -35,6 +36,14 @@ import { isAlwaysVisibleDecision } from "./recency.js";
 /* 1. Shared constants                                                */
 /* ---------------------------------------------------------------- */
 const todayStr = () => new Date().toISOString().slice(0, 10);
+// Shifts a "YYYY-MM-DD" string by `delta` days (negative goes back). Goes
+// through a real UTC Date rather than string math, so month/year boundaries
+// are handled correctly and local timezone can't shift the result a day off.
+function shiftDateStr(dateStr, delta) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
 
 // The three approval stages, in order, mirrored from server/src/stages.js.
 // (Duplicated rather than imported because the frontend and backend are
@@ -991,11 +1000,97 @@ function SegmentedAttendanceBar({ rows }) {
 // feed), built up over several steps. Deliberately a separate component from
 // PrincipalDashboard below, which stays in place for the Lecturer's "status"
 // tab (a different, floor-scoped, table-based view).
+// Institution-wide % across a set of already-computed per-class rows
+// (classAttendanceForDate's output) — sum absentCount and roster across
+// every class, rather than averaging each class's own %, so a large class
+// influences the headline number more than a small one.
+function aggregatePct(rows) {
+  if (rows.length === 0) return null;
+  const totalRoster = rows.reduce((n, r) => n + r.roster, 0);
+  const totalAbsent = rows.reduce((n, r) => n + r.absentCount, 0);
+  if (totalRoster === 0) return null;
+  return ((totalRoster - totalAbsent) / totalRoster) * 100;
+}
+
+// Same aggregation, but for a comparison day (yesterday) fetched separately
+// from GET /attendance — deliberately stricter than classAttendanceForDate
+// above: a class with NO record at all for that date is left out of the
+// total rather than treated as "0 absent" (emptyRecord()'s convention,
+// which every other screen in the app already uses for TODAY's own data).
+// Filling in a missing record as a perfect day would be misleading
+// specifically for a backing comparison day nobody is actively working on
+// — if nothing was marked, there's nothing to compare against, not a 100%.
+function aggregatePctFromRecordedOnly(state, classesInScope, day) {
+  let totalRoster = 0, totalAbsent = 0, classesCounted = 0;
+  for (const c of classesInScope) {
+    const r = day[c.id];
+    if (!r) continue;
+    const roster = state.students.filter((s) => s.classId === c.id).length;
+    if (roster === 0) continue;
+    const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
+    totalRoster += roster;
+    totalAbsent += absentCount;
+    classesCounted++;
+  }
+  if (classesCounted === 0 || totalRoster === 0) return null;
+  return ((totalRoster - totalAbsent) / totalRoster) * 100;
+}
+
+// Large numeral + trend arrow. `delta` is in percentage points (today's %
+// minus yesterday's), or null if yesterday has no usable data to compare
+// against (nothing recorded, or today itself has no classes to report on).
+function HeroAttendanceNumber({ pct, delta, loadingTrend }) {
+  const rounded = pct == null ? "—" : Math.round(pct);
+  const TrendIcon = delta == null ? Minus : delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
+  const trendTone = delta == null ? "text-slate-400" : delta > 0 ? "text-emerald-600" : delta < 0 ? "text-rose-600" : "text-slate-400";
+  return (
+    <div className="flex items-end justify-between gap-4">
+      <div>
+        <div className="font-display text-5xl font-bold text-slate-800 sm:text-6xl">{rounded === "—" ? rounded : `${rounded}%`}</div>
+        <p className="mt-1 text-xs text-slate-400">Institution-wide, today</p>
+      </div>
+      <div className={`flex items-center gap-1.5 text-sm font-medium ${trendTone}`}>
+        {loadingTrend ? (
+          <Loader2 className="animate-spin text-slate-300" size={16} />
+        ) : (
+          <>
+            <TrendIcon size={18} />
+            <span>{delta == null ? "No data for yesterday" : `${delta > 0 ? "+" : ""}${delta}% from yesterday`}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PrincipalHeroDashboard({ state, date }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
   const classRows = classAttendanceForDate(state, state.classes, day);
   const isToday = viewDate === date;
+  const todayPct = aggregatePct(classRows);
+
+  // Trend comparison day is always "the day before whatever's being
+  // viewed", not hardcoded to real-world yesterday — so paging the date
+  // picker back through history still shows a sensible trend for that day.
+  const compareDate = shiftDateStr(viewDate, -1);
+  const [trend, setTrend] = useState({ loading: true, pct: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    setTrend({ loading: true, pct: null });
+    api.getAttendanceRange(compareDate, viewDate)
+      .then((resp) => {
+        if (cancelled) return;
+        const compareDay = resp.attendance?.[compareDate] || {};
+        setTrend({ loading: false, pct: aggregatePctFromRecordedOnly(state, state.classes, compareDay) });
+      })
+      .catch(() => { if (!cancelled) setTrend({ loading: false, pct: null }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareDate, viewDate]);
+
+  const delta = todayPct != null && trend.pct != null ? Math.round(todayPct) - Math.round(trend.pct) : null;
 
   return (
     <div>
@@ -1003,6 +1098,10 @@ function PrincipalHeroDashboard({ state, date }) {
         <SectionTitle icon={LayoutDashboard} title="Attendance" subtitle={isToday ? `Today — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`} />
         <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
       </div>
+
+      <Card className="mb-4 p-4">
+        <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={trend.loading} />
+      </Card>
 
       <Card className="p-4">
         <p className="mb-3 text-sm font-medium text-slate-700">Classes by attendance</p>

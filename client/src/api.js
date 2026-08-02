@@ -97,6 +97,9 @@ export const api = {
   // ---- Whole-app snapshot ----
   getState: () => request("/state"),
 
+  // ---- Bounded attendance range (trend/long-leave calculations) ----
+  getAttendanceRange: (from, to) => request(`/attendance?from=${from}&to=${to}`),
+
   // ---- Master-data change proposals (Database Manager -> AO) ----
   proposeChange: (type, summary, payload) => request("/changes", { method: "POST", body: { type, summary, payload } }),
   approveChange: (id) => request(`/changes/${id}/approve`, { method: "POST" }),
