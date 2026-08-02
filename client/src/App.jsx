@@ -1120,6 +1120,63 @@ function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartD
   return results.sort((a, b) => b.streak - a.streak);
 }
 
+// Inclusive day count from awaySince through refDate (the day they left
+// counts as day 1). Student.awayReason/awaySince is a live, un-dated
+// status with no history of its own (see computeLongLeaveStreaks' own
+// comment on this) — so this is only meaningful measured against the
+// actual current date, never an arbitrary viewDate the Principal might be
+// browsing back to.
+function daysAway(awaySince, refDate) {
+  const diff = Math.round((Date.parse(`${refDate}T00:00:00Z`) - Date.parse(`${awaySince}T00:00:00Z`)) / 86400000);
+  return diff + 1;
+}
+
+const FEED_ITEM_DOT = { class: "bg-rose-500", streak: "bg-amber-500", away: "bg-slate-400" };
+
+// Combines three attendance-only sources into one flat "needs attention"
+// feed — no approval-pipeline items (pending Coordinator sign-off, etc.),
+// per the decision that this view stays attendance-only. Away-student
+// alerts only fire once someone's been away 5+ days (the same long-leave
+// tier as the absence-streak alerts), so a one-day home visit doesn't
+// trigger a notice — and only when actually viewing today, since away
+// status has no historical record to browse back to.
+function buildAttentionFeed(state, realToday, classRows, longLeaveStreaks, isToday) {
+  const items = [];
+
+  longLeaveStreaks.forEach(({ student, streak, capped }) => {
+    items.push({ key: `streak-${student.id}`, type: "streak", text: `${student.name} — ${streak}${capped ? "+" : ""} days absent` });
+  });
+
+  classRows.filter((r) => r.bucket === "rose").sort((a, b) => a.pct - b.pct).forEach((r) => {
+    items.push({ key: `class-${r.c.id}`, type: "class", text: `${r.c.name} at ${Math.round(r.pct)}%` });
+  });
+
+  if (isToday) {
+    state.students
+      .filter((s) => s.awayReason && daysAway(s.awaySince, realToday) >= LONG_LEAVE_MIN_DAYS)
+      .sort((a, b) => daysAway(b.awaySince, realToday) - daysAway(a.awaySince, realToday))
+      .forEach((s) => {
+        items.push({ key: `away-${s.id}`, type: "away", text: `${s.name} — ${daysAway(s.awaySince, realToday)} days away (${s.awayReason})` });
+      });
+  }
+
+  return items;
+}
+
+function AttentionFeed({ items }) {
+  if (items.length === 0) return <EmptyNote text="Nothing needs your attention right now." />;
+  return (
+    <ul className="space-y-2">
+      {items.map((item) => (
+        <li key={item.key} className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+          <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${FEED_ITEM_DOT[item.type]}`} />
+          <span>{item.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function PrincipalHeroDashboard({ state, date }) {
   const [viewDate, setViewDate] = useState(date);
   const day = state.attendance[viewDate] || {};
@@ -1151,6 +1208,7 @@ function PrincipalHeroDashboard({ state, date }) {
   const delta = todayPct != null && yesterdayPct != null ? Math.round(todayPct) - Math.round(yesterdayPct) : null;
 
   const longLeaveStreaks = rangeData.loading ? [] : computeLongLeaveStreaks(state, viewDate, rangeData.data, windowStartDate);
+  const feedItems = buildAttentionFeed(state, date, classRows, longLeaveStreaks, isToday);
 
   return (
     <div>
@@ -1172,21 +1230,9 @@ function PrincipalHeroDashboard({ state, date }) {
         )}
       </Card>
 
-      {/* Temporary raw rendering for this step — Step 4 folds this into the
-          combined "Needs your attention" feed alongside red-bucket classes. */}
       <Card className="p-4">
-        <p className="mb-3 text-sm font-medium text-slate-700">Long-leave (5+ days) — debug view, replaced in Step 4</p>
-        {rangeData.loading ? (
-          <p className="text-xs text-slate-400">Loading...</p>
-        ) : longLeaveStreaks.length === 0 ? (
-          <EmptyNote text="No students on a 5+ day absence streak." />
-        ) : (
-          <ul className="space-y-1 text-sm text-slate-600">
-            {longLeaveStreaks.map(({ student, streak, capped }) => (
-              <li key={student.id}>{student.name} ({student.roll}) — {streak}{capped ? "+" : ""} days absent</li>
-            ))}
-          </ul>
-        )}
+        <p className="mb-3 text-sm font-medium text-slate-700">Needs your attention</p>
+        {rangeData.loading ? <p className="text-xs text-slate-400">Loading...</p> : <AttentionFeed items={feedItems} />}
       </Card>
     </div>
   );
