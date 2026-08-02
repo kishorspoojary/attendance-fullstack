@@ -1389,7 +1389,18 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
               <EmptyNote text="No students enrolled in this class." />
             ) : (
               <ul className="space-y-2">
-                {roster.map(({ student, isAbsent, isAway, reason }) => {
+                {/* Matches sort to the top (stable, so ties keep roster
+                    order) while search is active; clearing the search
+                    returns to plain roster order. Dimming stays as-is —
+                    only the ordering changes. */}
+                {(rq
+                  ? [...roster].sort((a, b) => {
+                      const aMatch = a.student.name.toLowerCase().includes(rq) || a.student.roll.toLowerCase().includes(rq);
+                      const bMatch = b.student.name.toLowerCase().includes(rq) || b.student.roll.toLowerCase().includes(rq);
+                      return (bMatch ? 1 : 0) - (aMatch ? 1 : 0);
+                    })
+                  : roster
+                ).map(({ student, isAbsent, isAway, reason }) => {
                   const status = isAway ? { label: "Away", tone: "blue" } : isAbsent ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
                   const matches = !!rq && (student.name.toLowerCase().includes(rq) || student.roll.toLowerCase().includes(rq));
                   const faded = !!rq && !matches;
