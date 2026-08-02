@@ -32,14 +32,18 @@ export const attendanceRouter = Router();
 const SESSIONS = ["MORNING", "AFTERNOON"];
 
 // The :session URL segment travels lowercase (see api.js), the Session enum
-// is uppercase — this is the one place that reconciles them. An
-// unrecognized value defaults to MORNING rather than rejecting the request:
-// every caller today sends "morning" literally (no session-switching UI
-// yet — see App.jsx), so this is just future-proofing against a stale
-// client, not a validation boundary this phase needs to enforce strictly.
+// is uppercase — this is the one place that reconciles them. Returns null
+// for anything unrecognized; every write route below rejects that with a
+// 400 rather than silently falling back to MORNING. That silent fallback
+// was fine in Phase 1 (every caller hardcoded "morning" — a bad value could
+// only mean a stale client, and MORNING was the only session that existed
+// in practice), but now that the DO screen has a real session switcher, a
+// bad value here would mean a request silently lands on the WRONG session's
+// row — writing MORNING data while the DO believes they're in AFTERNOON —
+// which is a much worse failure mode than a loud rejection.
 function normalizeSession(raw) {
   const s = String(raw || "").toUpperCase();
-  return SESSIONS.includes(s) ? s : "MORNING";
+  return SESSIONS.includes(s) ? s : null;
 }
 
 async function getOrCreateRecord(date, classId, session) {
@@ -63,6 +67,7 @@ attendanceRouter.post(
   async (req, res) => {
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
+    if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
     const { studentId, reason } = req.body || {};
     if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -105,6 +110,7 @@ attendanceRouter.post(
 attendanceRouter.post("/attendance/:date/:classId/:session/confirm", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
   const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
   const { studentId } = req.body || {};
   if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -164,6 +170,7 @@ attendanceRouter.post("/attendance/:date/:classId/:session/confirm", requireAuth
 attendanceRouter.post("/attendance/:date/:classId/:session/correct-presence", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
   const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
   const { studentId } = req.body || {};
   if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -200,6 +207,7 @@ attendanceRouter.post("/attendance/:date/:classId/:session/correct-presence", re
 attendanceRouter.post("/attendance/:date/:classId/:session/reason", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
   const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
   const { studentId, reason } = req.body || {};
   if (!studentId || !reason) return res.status(400).json({ error: "studentId and reason are required" });
 
@@ -228,6 +236,7 @@ attendanceRouter.post("/attendance/:date/:classId/:session/reason", requireAuth,
 attendanceRouter.post("/attendance/:date/:classId/:session/headcount", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
   const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
   const { headcount } = req.body || {};
   if (typeof headcount !== "number") return res.status(400).json({ error: "headcount must be a number" });
 
@@ -258,6 +267,7 @@ attendanceRouter.post(
   async (req, res) => {
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
+    if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
     const stageKey = STAGE_ROLE_TO_KEY[req.user.role];
 
     const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
@@ -319,6 +329,7 @@ attendanceRouter.post(
   async (req, res) => {
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
+    if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
     const { reason } = req.body || {};
     if (!reason) return res.status(400).json({ error: "A reason is required so they know what to fix" });
 
