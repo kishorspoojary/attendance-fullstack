@@ -27,7 +27,7 @@ import {
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
   CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
-  TrendingUp, TrendingDown, Minus, Home,
+  TrendingUp, TrendingDown, Minus, Home, ArrowLeft,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -930,6 +930,7 @@ const STAT_TONES = {
   blue: "bg-blue-50 border-blue-100 text-blue-700",
   emerald: "bg-emerald-50 border-emerald-100 text-emerald-700",
   rose: "bg-rose-50 border-rose-100 text-rose-700",
+  amber: "bg-amber-50 border-amber-100 text-amber-700",
 };
 function Stat({ label, value, tone = "slate" }) {
   const cls = STAT_TONES[tone] || STAT_TONES.slate;
@@ -1192,22 +1193,29 @@ function buildAttentionFeed(state, realToday, classRows, longLeaveStreaks, isTod
   return items;
 }
 
-// Plain (non-tappable) for now — Step B adds tap-through to a class detail
-// view for items that reference one; kept out of this step since it's
-// styling-only.
-function AttentionFeed({ items }) {
+// Every item already carries the classId of the class it's about (a
+// student-level streak/away alert is still "about" that student's class),
+// so every item is tappable — onSelectClass jumps to that class's
+// full-screen detail view.
+function AttentionFeed({ items, onSelectClass }) {
   if (items.length === 0) return <EmptyNote text="Nothing needs your attention right now." />;
   return (
     <ul className="space-y-2.5">
       {items.map((item) => {
         const Icon = FEED_ICON[item.type];
         return (
-          <li key={item.key} className="flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
-            <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${FEED_TONE_CLASS[item.tone]}`}><Icon size={15} /></span>
-            <span className="min-w-0">
-              <span className="block font-medium text-slate-800">{item.text}</span>
-              <span className="mt-0.5 block text-xs text-slate-400">{item.subtext}</span>
-            </span>
+          <li key={item.key}>
+            <button
+              type="button"
+              onClick={() => onSelectClass(item.classId)}
+              className="flex w-full items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-100 active:bg-slate-200"
+            >
+              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${FEED_TONE_CLASS[item.tone]}`}><Icon size={15} /></span>
+              <span className="min-w-0">
+                <span className="block font-medium text-slate-800">{item.text}</span>
+                <span className="mt-0.5 block text-xs text-slate-400">{item.subtext}</span>
+              </span>
+            </button>
           </li>
         );
       })}
@@ -1215,8 +1223,142 @@ function AttentionFeed({ items }) {
   );
 }
 
+// "Jump to a class" — filters state.classes by name, live dropdown of up
+// to 6 matches; selecting one calls onSelect(classId) and clears the query.
+function ClassSearchBox({ classes, onSelect }) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const matches = q ? classes.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 6) : [];
+
+  return (
+    <div>
+      <div className="relative">
+        <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Jump to a class..."
+          className={`${inputCls} py-2.5 pl-9`}
+        />
+      </div>
+      {q && (
+        matches.length > 0 ? (
+          <ul className="mt-1.5 divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+            {matches.map((c) => (
+              <li key={c.id}>
+                <button type="button" onClick={() => { onSelect(c.id); setQuery(""); }} className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+                  <span>{c.name}</span>
+                  {c.year != null && <span className="text-xs text-slate-400">Year {c.year}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1.5 text-xs text-slate-400">No classes match "{query}".</p>
+        )
+      )}
+    </div>
+  );
+}
+
+// Full-screen (not an in-place expand) single-day roster view for one
+// class, reached via the search box or a feed item tap, closed via the
+// back button. Deliberately single-day only — no trend, no history, same
+// scope boundary as the rest of this dashboard. Reuses
+// classAttendanceForDate for the summary row's math (not rebuilt) and the
+// existing resolveAbsenceReason helper (also used by AbsenteesView) for
+// each student's reason text, rather than inventing a third way to derive
+// it.
+//
+// "Absent" here means the same thing it means for the segmented bar:
+// a wardenAbsences/laiAbsences entry for that date. An actively "away"
+// student has neither (see computeLongLeaveStreaks' comment on why), so
+// they're shown in the roster with their own "Away" status rather than
+// folded into "Absent" — keeping this screen's summary numbers consistent
+// with the dashboard's segmented bar instead of introducing a second,
+// slightly different definition of "absent" that would make the two
+// disagree on the same class.
+function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
+  const cls = state.classes.find((c) => c.id === classId);
+  const day = state.attendance[viewDate] || {};
+  const record = day[classId] || emptyRecord();
+  const [row] = classAttendanceForDate(state, cls ? [cls] : [], day);
+
+  const roster = state.students
+    .filter((s) => s.classId === classId)
+    .map((s) => {
+      const isAbsent = !!record.wardenAbsences?.[s.id] || !!record.laiAbsences?.[s.id];
+      const { reason, isAway } = resolveAbsenceReason(s.id, record, s);
+      return { student: s, isAbsent, isAway, reason };
+    })
+    .sort((a, b) => a.student.roll.localeCompare(b.student.roll));
+
+  return (
+    <div className="mx-auto w-full max-w-md sm:max-w-lg">
+      <button type="button" onClick={onBack} className="mb-3 flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
+        <ArrowLeft size={15} /> Back to dashboard
+      </button>
+
+      <div className="mb-4">
+        <h2 className="font-display text-xl font-semibold text-slate-900">{cls?.name || "Unknown class"}</h2>
+        <p className="text-sm text-slate-500">{isToday ? `Today — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`}</p>
+      </div>
+
+      {!cls ? (
+        <EmptyNote text="This class no longer exists." />
+      ) : (
+        <>
+          <Card className="mb-5 p-5">
+            {!row ? (
+              <EmptyNote text="No students enrolled in this class." />
+            ) : (
+              <div className="grid grid-cols-3 gap-3">
+                <Stat label="Present" value={row.roster - row.absentCount} tone="emerald" />
+                <Stat label="Absent" value={row.absentCount} tone="rose" />
+                <Stat label="Rate" value={`${Math.round(row.pct)}%`} tone={row.bucket} />
+              </div>
+            )}
+            {roster.some((r) => r.isAway) && (
+              <p className="mt-3 text-xs text-slate-400">Away students appear in the roster below with their own status, but aren't counted in "Absent" above — that count matches the segmented bar on the dashboard.</p>
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <p className="mb-4 text-sm font-semibold text-slate-700">Roster ({roster.length})</p>
+            {roster.length === 0 ? (
+              <EmptyNote text="No students enrolled in this class." />
+            ) : (
+              <ul className="space-y-2">
+                {roster.map(({ student, isAbsent, isAway, reason }) => {
+                  const status = isAway ? { label: "Away", tone: "blue" } : isAbsent ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
+                  return (
+                    <li key={student.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-sm">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-slate-800">{student.name}</span>
+                          <span className="text-xs text-slate-400">({student.roll})</span>
+                        </div>
+                        {(isAbsent || isAway) && reason !== "—" && <p className="mt-0.5 text-xs text-slate-500">{reason}</p>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Badge tone="slate">{student.isLocal ? "Day scholar" : "Hosteller"}</Badge>
+                        <Badge tone={status.tone}>{status.label}</Badge>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PrincipalHeroDashboard({ state, date }) {
   const [viewDate, setViewDate] = useState(date);
+  const [selectedClassId, setSelectedClassId] = useState(null);
   const day = state.attendance[viewDate] || {};
   const classRows = classAttendanceForDate(state, state.classes, day);
   const isToday = viewDate === date;
@@ -1248,6 +1390,18 @@ function PrincipalHeroDashboard({ state, date }) {
   const longLeaveStreaks = rangeData.loading ? [] : computeLongLeaveStreaks(state, viewDate, rangeData.data, windowStartDate);
   const feedItems = buildAttentionFeed(state, date, classRows, longLeaveStreaks, isToday);
 
+  if (selectedClassId) {
+    return (
+      <ClassDetailView
+        state={state}
+        classId={selectedClassId}
+        viewDate={viewDate}
+        isToday={isToday}
+        onBack={() => setSelectedClassId(null)}
+      />
+    );
+  }
+
   return (
     // Capped width, not full-bleed: on a narrow phone this simply fills the
     // screen as normal, but on a wider viewport it stays a single
@@ -1264,6 +1418,10 @@ function PrincipalHeroDashboard({ state, date }) {
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
+      <div className="mb-5">
+        <ClassSearchBox classes={state.classes} onSelect={setSelectedClassId} />
+      </div>
+
       <Card className="mb-5 p-5">
         <p className="mb-4 text-sm font-semibold text-slate-700">Classes by attendance</p>
         {classRows.length === 0 ? (
@@ -1278,7 +1436,7 @@ function PrincipalHeroDashboard({ state, date }) {
           <p className="text-sm font-semibold text-slate-700">Needs your attention</p>
           {feedItems.length > 0 && <Badge tone="rose">{feedItems.length}</Badge>}
         </div>
-        {rangeData.loading ? <p className="text-xs text-slate-400">Loading...</p> : <AttentionFeed items={feedItems} />}
+        {rangeData.loading ? <p className="text-xs text-slate-400">Loading...</p> : <AttentionFeed items={feedItems} onSelectClass={setSelectedClassId} />}
       </Card>
     </div>
   );
