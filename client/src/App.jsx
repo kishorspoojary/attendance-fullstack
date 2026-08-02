@@ -1418,12 +1418,11 @@ function PrincipalHeroDashboard({ state, date }) {
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
-      <div className="mb-5">
-        <ClassSearchBox classes={state.classes} onSelect={setSelectedClassId} />
-      </div>
-
       <Card className="mb-5 p-5">
         <p className="mb-4 text-sm font-semibold text-slate-700">Classes by attendance</p>
+        <div className="mb-4">
+          <ClassSearchBox classes={state.classes} onSelect={setSelectedClassId} />
+        </div>
         {classRows.length === 0 ? (
           <EmptyNote text="No classes with students yet." />
         ) : (
