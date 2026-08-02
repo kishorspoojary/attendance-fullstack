@@ -2780,7 +2780,7 @@ function ViewStudents({ me }) {
 /* ---------------------------------------------------------------- */
 /* 5c. Shared approval queue (Lecturer and Coordinator)       */
 /* ---------------------------------------------------------------- */
-function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note, scopeFloorIds }) {
+function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note, scopeFloorIds, me }) {
   const day = sessionScoped(state.attendance[date]);
   // Coordinator sees the whole institution (scopeFloorIds omitted); Lecturer
   // only their own assigned floor(s) — same scoping pattern as
@@ -2837,12 +2837,30 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
         <div className="mt-8">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Already approved</p>
           <div className="space-y-2">
-            {done.map(({ c, r }) => (
-              <div key={c.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
-                <span>{c.name}</span>
-                <span className="text-xs text-slate-400">{r[stageKey].byName} · {formatTime(r[stageKey].at)}</span>
-              </div>
-            ))}
+            {done.map(({ c, r }) => {
+              // Optional cross-verification: a second Lecturer on the same
+              // floor can voluntarily co-sign a class teacherApproved
+              // already covers — never required, never gates anything
+              // downstream. Only offered to a Lecturer who isn't the
+              // original approver, on a class not already co-signed.
+              const canCoSign = stageKey === "teacherApproved" && me?.role === "LECTURER" && r.teacherApproved?.by !== me.id && !r.teacherCoSignedBy;
+              return (
+                <div key={c.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>{c.name}</span>
+                    <span className="text-xs text-slate-400">{r[stageKey].byName} · {formatTime(r[stageKey].at)}</span>
+                  </div>
+                  {stageKey === "teacherApproved" && r.teacherCoSignedBy && (
+                    <div className="mt-1 text-xs text-blue-600">Co-signed by {r.teacherCoSignedBy.byName} · {formatTime(r.teacherCoSignedBy.at)}</div>
+                  )}
+                  {canCoSign && (
+                    <div className="mt-1.5">
+                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.coSign(date, c.id), "Co-signed")}>Co-sign</Btn>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -2925,7 +2943,7 @@ function LecturerApprovals({ state, date, me, runAction }) {
     .filter(Boolean);
   return (
     <div>
-      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." scopeFloorIds={me.floorIds} />
+      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." scopeFloorIds={me.floorIds} me={me} />
       {floors.length > 0 && (
         <div className="mt-6 space-y-3">
           {floors.map((floor) => (

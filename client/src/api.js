@@ -134,6 +134,7 @@ export const api = {
   setHeadcount: (date, classId, headcount, session = "morning") => request(`/attendance/${date}/${classId}/${session}/headcount`, { method: "POST", body: { headcount } }),
   approveStage: (date, classId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/approve`, { method: "POST" }),
   sendBack: (date, classId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/send-back`, { method: "POST", body: { reason } }),
+  coSign: (date, classId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/co-sign`, { method: "POST" }),
   runCutoff: (date) => request(`/attendance/${date}/cutoff`, { method: "POST" }),
   runFloorCutoff: (date, collegeFloorId) => request(`/attendance/${date}/${collegeFloorId}/floor-cutoff`, { method: "POST" }),
   setFloorDeadline: (collegeFloorId, time) => request(`/college-floors/${collegeFloorId}/deadline`, { method: "PUT", body: { time } }),

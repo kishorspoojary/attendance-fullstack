@@ -264,6 +264,14 @@ model AttendanceRecord {
   doApproved          Json?
   teacherApproved      Json?
   coordinatorApproved Json?
+  // Optional, additive — a second Lecturer on the same floor voluntarily
+  // co-signing a class teacherApproved already covers. Never required,
+  // never gates anything downstream (Coordinator doesn't wait on it, the
+  // class is already fully approved without it); purely a visible second
+  // set of eyes for classes someone wants extra confidence on. Only
+  // settable once teacherApproved exists, and only by a Lecturer other than
+  // whoever set that — see routes/attendance.js's /co-sign.
+  teacherCoSignedBy Json? // { by, byName, at } — same shape as the *Approved fields
 
   // If the deadline passes before every stage is done, Coordinator's cutoff
   // action can force this record to "publish" anyway — but never bypasses

@@ -21,6 +21,7 @@
 //   6. POST .../cutoff       — Coordinator can force-publish anything still open past the deadline
 // ============================================================================
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
 import { STAGES, currentStageIndex, priorStageKey } from "../stages.js";
@@ -50,6 +51,27 @@ async function getOrCreateRecord(date, classId, session) {
   const existing = await prisma.attendanceRecord.findUnique({ where: { date_classId_session: { date, classId, session } } });
   if (existing) return existing;
   return prisma.attendanceRecord.create({ data: { date, classId, session } });
+}
+
+// Sets a nullable Json field on an AttendanceRecord only if it's still
+// null, closing the read-check-write race that a plain
+// `if (record[field]) return 409; else update(...)` leaves open: two
+// concurrent requests can both read null before either write lands, both
+// pass the check, and the second `update()` would silently overwrite the
+// first instead of failing. This uses `updateMany` with the null check
+// INSIDE the `where` clause instead — the database evaluates it atomically
+// per writer, so a losing concurrent writer's query simply matches 0 rows.
+// Plain `null` in a Json field's `where` filter throws in this Prisma
+// version (confirmed against the real DB before wiring this in) — Json
+// columns need Prisma.DbNull to mean "SQL NULL" specifically. Returns the
+// updated record, or null if someone else won the race.
+async function setJsonFieldIfNull(recordId, field, value) {
+  const result = await prisma.attendanceRecord.updateMany({
+    where: { id: recordId, [field]: { equals: Prisma.DbNull } },
+    data: { [field]: value },
+  });
+  if (result.count === 0) return null;
+  return prisma.attendanceRecord.findUnique({ where: { id: recordId } });
 }
 
 const nowTs = () => new Date().toISOString();
@@ -321,6 +343,41 @@ attendanceRouter.post(
     res.json({ record: updated });
   }
 );
+
+// --------------------------------------------------------------------------
+// Optional cross-verification — a second Lecturer on the same floor
+// voluntarily co-signing a class teacherApproved already covers. Never
+// required and never gates anything downstream (Coordinator doesn't wait
+// on this, the class is already fully approved without it) — purely a
+// visible extra set of eyes for classes someone wants a second review on.
+// Requires teacherApproved to already be set, and the co-signer to be
+// someone OTHER than whoever set it — co-signing your own approval is
+// meaningless. Uses setJsonFieldIfNull for the same reason /approve does
+// (see that route): two Lecturers racing to co-sign the same class should
+// never let one silently overwrite the other's co-sign.
+// --------------------------------------------------------------------------
+attendanceRouter.post("/attendance/:date/:classId/:session/co-sign", requireAuth, requireRole("LECTURER"), async (req, res) => {
+  const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
+
+  const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!classroom) return res.status(404).json({ error: "Class not found" });
+  if (!(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    return res.status(403).json({ error: "This class's floor isn't assigned to you" });
+  }
+
+  const record = await getOrCreateRecord(date, classId, session);
+  if (!record.teacherApproved) return res.status(409).json({ error: "Not approved by a Lecturer yet — nothing to co-sign" });
+  if (record.teacherApproved.by === req.user.id) {
+    return res.status(400).json({ error: "You already approved this yourself — co-sign is for a second Lecturer's review" });
+  }
+  if (record.teacherCoSignedBy) return res.status(409).json({ error: "Already co-signed" });
+
+  const updated = await setJsonFieldIfNull(record.id, "teacherCoSignedBy", { by: req.user.id, byName: req.user.name, at: nowTs() });
+  if (!updated) return res.status(409).json({ error: "Already co-signed" });
+  res.json({ record: updated });
+});
 
 // --------------------------------------------------------------------------
 // STEP 5 — send back, instead of approving. Available to the same three
