@@ -120,7 +120,40 @@ attendanceRouter.post("/attendance/:date/:classId/:session/confirm", requireAuth
   if (!combined[studentId]) return res.status(400).json({ error: "That student isn't on today's absentee list" });
 
   const doConfirmed = { ...(record.doConfirmed || {}), [studentId]: { by: req.user.id, byName: req.user.name, at: nowTs() } };
-  const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doConfirmed } });
+  const data = { doConfirmed };
+
+  // Afternoon-only: if this same student was also absent AND already
+  // DO-verified in the morning session for this exact class/date, carry
+  // that verified reason forward right now instead of making the DO call
+  // home again — Window 2 (reason) should only need a fresh call when
+  // something actually changed since the morning (a presence flip), not
+  // just because this session's row starts empty. Deliberately a one-time
+  // snapshot copy at confirm time, not a live link back to the morning
+  // record — if the morning entry is edited afterward, this one doesn't
+  // follow it. carriedFromMorning marks it as such so the UI can show
+  // "same as this morning" rather than implying a fresh call happened; the
+  // DO can still override via /reason, which rebuilds the entry from
+  // scratch and drops this flag.
+  if (session === "AFTERNOON" && !record.doVerified?.[studentId]) {
+    const morning = await prisma.attendanceRecord.findUnique({
+      where: { date_classId_session: { date, classId, session: "MORNING" } },
+    });
+    const morningVerified = morning?.doVerified?.[studentId];
+    if (morningVerified) {
+      data.doVerified = {
+        ...(record.doVerified || {}),
+        [studentId]: {
+          reason: morningVerified.reason,
+          verifiedBy: morningVerified.verifiedBy,
+          verifiedByName: morningVerified.verifiedByName,
+          at: nowTs(),
+          carriedFromMorning: true,
+        },
+      };
+    }
+  }
+
+  const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data });
   res.json({ record: updated });
 });
 

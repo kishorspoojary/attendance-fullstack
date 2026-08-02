@@ -4401,7 +4401,7 @@ function LAIScreen({ state, date, me, runAction }) {
 /* ---------------------------------------------------------------- */
 /* 5f. Discipline Officer                                              */
 /* ---------------------------------------------------------------- */
-function DoClassCard({ c, record, date, students, runAction }) {
+function DoClassCard({ c, record, date, session, students, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
   const [subTab, setSubTab] = useState("confirm"); // "confirm" (Window 1) | "reasons" (Window 2)
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
@@ -4409,6 +4409,11 @@ function DoClassCard({ c, record, date, students, runAction }) {
     student: students.find((s) => s.id === sid), meta,
     confirmed: !!record.doConfirmed?.[sid],
     verified: record.doVerified?.[sid]?.reason || null,
+    // Auto-carried from the morning session's already-verified reason (see
+    // /confirm's server-side logic) rather than a fresh call this session —
+    // shown distinctly so the DO/Lecturer/Coordinator don't read it as a
+    // new phone call that happened this afternoon.
+    carriedFromMorning: !!record.doVerified?.[sid]?.carriedFromMorning,
   }));
   const away = students.filter((s) => s.classId === c.id && s.awayReason);
   const approved = !!record.doApproved;
@@ -4418,7 +4423,7 @@ function DoClassCard({ c, record, date, students, runAction }) {
   const allConfirmed = list.every((i) => i.confirmed);
   const allReasoned = list.every((i) => i.verified);
 
-  const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason));
+  const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason, session));
 
   return (
     <Card className="p-4">
@@ -4432,7 +4437,7 @@ function DoClassCard({ c, record, date, students, runAction }) {
         <div className="flex gap-2">
           <input type="number" min="0" disabled={approved} className={`${inputCls} w-28`} value={headcount} onChange={(e) => setHeadcount(e.target.value)} />
           {!approved && headcount !== "" && Number(headcount) !== record.headcount && (
-            <Btn size="sm" variant="outline" onClick={() => runAction(() => api.setHeadcount(date, c.id, Number(headcount)))}>Save</Btn>
+            <Btn size="sm" variant="outline" onClick={() => runAction(() => api.setHeadcount(date, c.id, Number(headcount), session))}>Save</Btn>
           )}
         </div>
       </Field>
@@ -4478,12 +4483,12 @@ function DoClassCard({ c, record, date, students, runAction }) {
                   ) : confirmed ? (
                     <div className="flex items-center gap-2">
                       <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed absent</Badge>
-                      <button className="text-xs text-slate-400 underline hover:text-rose-600" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id), "Marked present instead")}>Actually present?</button>
+                      <button className="text-xs text-slate-400 underline hover:text-rose-600" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id, session), "Marked present instead")}>Actually present?</button>
                     </div>
                   ) : (
                     <div className="flex gap-1.5">
-                      <Btn size="sm" variant="success" onClick={() => runAction(() => api.confirmAbsent(date, c.id, student.id))}>Confirm absent</Btn>
-                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id), "Marked present")}>Actually present</Btn>
+                      <Btn size="sm" variant="success" onClick={() => runAction(() => api.confirmAbsent(date, c.id, student.id, session))}>Confirm absent</Btn>
+                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id, session), "Marked present")}>Actually present</Btn>
                     </div>
                   )}
                 </div>
@@ -4492,11 +4497,15 @@ function DoClassCard({ c, record, date, students, runAction }) {
           ) : (
             <div className="mt-3 space-y-2">
               <p className="text-xs text-slate-500">Later, after calling home or the Warden — record the actual reason for each confirmed absentee.</p>
-              {list.filter((i) => i.confirmed).map(({ student, meta, verified }) => student && (
+              {list.filter((i) => i.confirmed).map(({ student, meta, verified, carriedFromMorning }) => student && (
                 <div key={student.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI, no reason yet"}</span></span>
-                    {verified && <Badge tone="emerald"><CheckCircle2 size={11} /> Verified</Badge>}
+                    {verified && (
+                      carriedFromMorning
+                        ? <Badge tone="blue">Same as this morning — no call needed</Badge>
+                        : <Badge tone="emerald"><CheckCircle2 size={11} /> Verified</Badge>
+                    )}
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {DAILY_REASONS.map((reason) => (
@@ -4513,10 +4522,10 @@ function DoClassCard({ c, record, date, students, runAction }) {
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned} onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}>
+            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned} onClick={() => runAction(() => api.approveStage(date, c.id, session), "Approved")}>
               <CheckCircle2 size={14} /> {!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : "Approve list"}
             </Btn>
-            {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason), "Sent back to Warden/LAI")} />}
+            {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason, session), "Sent back to Warden/LAI")} />}
           </div>
         </>
       )}
@@ -4524,16 +4533,32 @@ function DoClassCard({ c, record, date, students, runAction }) {
   );
 }
 
+// MORNING/AFTERNOON, in this order everywhere a DO picks a session — the
+// order a real day happens in, not alphabetical.
+const SESSION_TABS = [
+  { key: "MORNING", label: "Morning" },
+  { key: "AFTERNOON", label: "Afternoon" },
+];
+
 function DOScreen({ state, date, me, runAction }) {
   const floorClasses = state.classes.filter((c) => (me.floorIds || []).includes(c.collegeFloorId));
   const poolmates = state.staff.filter((s) => s.role === "DO" && s.id !== me.id && (s.floorIds || []).some((f) => (me.floorIds || []).includes(f)));
+  const [session, setSession] = useState(DEFAULT_SESSION);
   return (
     <div>
       <SectionTitle icon={Phone} title="Verify & approve" subtitle="Two or more DOs can cover the same floor — split the classes between yourselves however works, or overlap freely; whoever approves a class first completes it for everyone." />
       {poolmates.length > 0 && <p className="mb-4 text-xs text-slate-400">Sharing this floor with: {poolmates.map((p) => p.name).join(", ")}</p>}
+      <div className="mb-4 inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+        {SESSION_TABS.map((s) => (
+          <button key={s.key} onClick={() => setSession(s.key)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${session === s.key ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
       <div className="space-y-4">
         {floorClasses.map((c) => (
-          <DoClassCard key={c.id} c={c} record={state.attendance[date]?.[c.id]?.[DEFAULT_SESSION] || emptyRecord()} date={date} students={state.students} runAction={runAction} />
+          <DoClassCard key={`${c.id}-${session}`} c={c} record={state.attendance[date]?.[c.id]?.[session] || emptyRecord()} date={date} session={session} students={state.students} runAction={runAction} />
         ))}
         {floorClasses.length === 0 && <EmptyNote text="No floor assigned to you yet." />}
       </div>
