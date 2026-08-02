@@ -1112,25 +1112,53 @@ function HeroAttendanceNumber({ pct, delta, loadingTrend }) {
   );
 }
 
-// How many trailing days to fetch for the streak scan, beyond the 5-day
-// threshold itself — enough margin (3 extra days) that a typical 5-7 day
-// streak gets its exact length, while a streak that's still unbroken at
-// the oldest fetched date gets flagged `capped` (see computeLongLeaveStreaks)
-// rather than silently under-reported.
-const LONG_LEAVE_MIN_DAYS = 5;
-const LONG_LEAVE_WINDOW_DAYS = 7;
+// How many trailing days to fetch for a streak scan of a given threshold —
+// enough margin (3 extra days) beyond the threshold itself that a streak
+// right at the line gets its exact length, while one still unbroken at the
+// oldest fetched date gets flagged `capped` (see computeAbsenceStreaks)
+// rather than silently under-reported. windowStartDate ends up
+// `minDays + 2` days before viewDate, an inclusive span of `minDays + 3`
+// days — this is the same margin the original 5-day/7-day pair used
+// (7 = 5 + 2), just derived instead of hand-picked per threshold.
+function streakWindowDays(minDays) {
+  return minDays + 2;
+}
+
+const LONG_LEAVE_MIN_DAYS = 5; // Principal's institution-wide long-leave threshold
+const LONG_LEAVE_WINDOW_DAYS = streakWindowDays(LONG_LEAVE_MIN_DAYS);
+const FLOOR_STREAK_MIN_DAYS = 3; // Lecturer's tighter, floor-scoped early-warning threshold
+const FLOOR_STREAK_WINDOW_DAYS = streakWindowDays(FLOOR_STREAK_MIN_DAYS);
+
+// A student counts as absent for a class/date when they're absent in
+// EVERY session that has a record that day — not "at least one." A
+// student absent in only one session (came back after being marked absent,
+// or left partway through the day) shouldn't read as a full absent day for
+// streak purposes. A date with no record in any session is still
+// ambiguous (returns null) — see computeAbsenceStreaks' own comment on why
+// that breaks the streak rather than being treated as a skippable gap.
+// This generalizes the old MORNING-only shortcut rather than replacing it:
+// when only MORNING has a record yet (checking "today" before the
+// afternoon session has happened), it reduces to exactly that behavior.
+function absentAllDay(dayRecords, studentId) {
+  const sessions = Object.keys(dayRecords || {});
+  if (sessions.length === 0) return null;
+  return sessions.every((s) => {
+    const rec = dayRecords[s];
+    return !!rec.wardenAbsences?.[studentId] || !!rec.laiAbsences?.[studentId];
+  });
+}
 
 // Scans a fetched attendance window (GET /attendance's {[date]: {[classId]:
-// {[session]: record}}} shape) for students on a 5+ consecutive day absence
-// streak ending at `viewDate` — i.e. currently, actively absent, not a past
-// streak that already resolved. Walks backward one calendar day at a time
-// from viewDate; a day with NO attendance record for the student's class
+// {[session]: record}}} shape) for students on a `minDays`+ consecutive-day
+// absence streak ending at `viewDate` — i.e. currently, actively absent,
+// not a past streak that already resolved. Walks backward one calendar day
+// at a time; a day with no record in any session for the student's class
 // breaks the streak immediately, per this feature's design decision: "no
 // record" means nobody marked attendance that day, which is ambiguous, not
-// proof of presence, and must never be treated as a skippable gap. Scoped
-// to DEFAULT_SESSION (MORNING) — see that constant's comment; "what counts
-// as an absent day" when sessions disagree is deliberately deferred, not
-// solved here.
+// proof of presence, and must never be treated as a skippable gap. Shared
+// by the Principal's 5-day institution-wide view and the Lecturer's 3-day
+// floor-scoped one — same scan, different threshold and a different slice
+// of students the caller passes in (all of them, or just one floor's).
 //
 // Deliberately scans only wardenAbsences/laiAbsences, never
 // Student.awayReason/awaySince — those are a different, disjoint concept: a
@@ -1146,11 +1174,10 @@ const LONG_LEAVE_WINDOW_DAYS = 7;
 // Also uses the student's CURRENT classId to look up every historical
 // date, since there's no historical class-membership snapshot anywhere in
 // this schema (a pre-existing limitation, not new to this function).
-function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartDate) {
+function computeAbsenceStreaks(students, viewDate, attendanceWindow, windowStartDate, minDays) {
   const results = [];
-  for (const student of state.students) {
-    const todayRecord = attendanceWindow[viewDate]?.[student.classId]?.[DEFAULT_SESSION];
-    const absentToday = !!todayRecord && (!!todayRecord.wardenAbsences?.[student.id] || !!todayRecord.laiAbsences?.[student.id]);
+  for (const student of students) {
+    const absentToday = absentAllDay(attendanceWindow[viewDate]?.[student.classId], student.id);
     if (!absentToday) continue;
 
     let streak = 0;
@@ -1158,23 +1185,21 @@ function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartD
     let d = viewDate;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const rec = attendanceWindow[d]?.[student.classId]?.[DEFAULT_SESSION];
-      if (!rec) break; // no record for this date — ambiguous, breaks the streak
-      const wasAbsent = !!rec.wardenAbsences?.[student.id] || !!rec.laiAbsences?.[student.id];
-      if (!wasAbsent) break;
+      const wasAbsent = absentAllDay(attendanceWindow[d]?.[student.classId], student.id);
+      if (!wasAbsent) break; // no record, or present — either way breaks the streak
       streak++;
       if (d === windowStartDate) { capped = true; break; } // can't see further back than what was fetched
       d = shiftDateStr(d, -1);
     }
 
-    if (streak >= LONG_LEAVE_MIN_DAYS) results.push({ student, streak, capped });
+    if (streak >= minDays) results.push({ student, streak, capped });
   }
   return results.sort((a, b) => b.streak - a.streak);
 }
 
 // Inclusive day count from awaySince through refDate (the day they left
 // counts as day 1). Student.awayReason/awaySince is a live, un-dated
-// status with no history of its own (see computeLongLeaveStreaks' own
+// status with no history of its own (see computeAbsenceStreaks' own
 // comment on this) — so this is only meaningful measured against the
 // actual current date, never an arbitrary viewDate the Principal might be
 // browsing back to.
@@ -1313,7 +1338,7 @@ const STUDENT_HISTORY_DAYS = 7;
 // {date, status}, status one of "present" | "absent" | "none" — "none"
 // means no attendance record at all for this student's class that date,
 // kept distinct from both present and absent (not folded into either),
-// same ambiguous-gap treatment computeLongLeaveStreaks already applies to
+// same ambiguous-gap treatment computeAbsenceStreaks already applies to
 // the streak scan. Reads state.attendance directly — already the full,
 // unfiltered history (see GET /state) — no fetch needed. Scoped to
 // DEFAULT_SESSION (MORNING) — see that constant's comment; a day with only
@@ -1360,7 +1385,7 @@ const HISTORY_SQUARE_CLASS = { present: "bg-emerald-500", absent: "bg-rose-500",
 //
 // "Absent" here means the same thing it means for the segmented bar:
 // a wardenAbsences/laiAbsences entry for that date. An actively "away"
-// student has neither (see computeLongLeaveStreaks' comment on why), so
+// student has neither (see computeAbsenceStreaks' comment on why), so
 // they're shown in the roster with their own "Away" status rather than
 // folded into "Absent" — keeping this screen's summary numbers consistent
 // with the dashboard's segmented bar instead of introducing a second,
@@ -1530,7 +1555,7 @@ function PrincipalHeroDashboard({ state, date }) {
   const yesterdayPct = compareHasData ? aggregatePctFromRecordedOnly(state, state.classes, compareDay) : null;
   const delta = todayPct != null && yesterdayPct != null ? Math.round(todayPct) - Math.round(yesterdayPct) : null;
 
-  const longLeaveStreaks = rangeData.loading ? [] : computeLongLeaveStreaks(state, viewDate, rangeData.data, windowStartDate);
+  const longLeaveStreaks = rangeData.loading ? [] : computeAbsenceStreaks(state.students, viewDate, rangeData.data, windowStartDate, LONG_LEAVE_MIN_DAYS);
   const feedItems = buildAttentionFeed(state, date, classRows, longLeaveStreaks, isToday);
 
   if (selectedClassId) {
@@ -1594,6 +1619,31 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   const verified = rows.filter((x) => currentStageIndex(x.r) === STAGES.length).length;
   const autoPassed = rows.filter((x) => x.r.forcedPublish && currentStageIndex(x.r) < STAGES.length).length;
   const isToday = viewDate === date;
+
+  // Floor-scoped early-warning streak watch, tighter threshold than the
+  // Principal's institution-wide 5-day one (PrincipalHeroDashboard) — only
+  // for a Lecturer's own floor (scopeFloorIds present). Coordinator's
+  // unscoped rendering of this same component skips it; the Principal's
+  // own 5-day view already covers institution-wide ground at a coarser bar.
+  const floorStreakWindowStart = shiftDateStr(viewDate, -FLOOR_STREAK_WINDOW_DAYS);
+  const [floorStreakData, setFloorStreakData] = useState({ loading: true, data: {} });
+  useEffect(() => {
+    if (!scopeFloorIds) return;
+    let cancelled = false;
+    setFloorStreakData({ loading: true, data: {} });
+    api.getAttendanceRange(floorStreakWindowStart, viewDate)
+      .then((resp) => { if (!cancelled) setFloorStreakData({ loading: false, data: resp.attendance || {} }); })
+      .catch(() => { if (!cancelled) setFloorStreakData({ loading: false, data: {} }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeFloorIds, floorStreakWindowStart, viewDate]);
+  const floorStreaks = !scopeFloorIds || floorStreakData.loading
+    ? []
+    : computeAbsenceStreaks(
+        state.students.filter((s) => classesInScope.some((c) => c.id === s.classId)),
+        viewDate, floorStreakData.data, floorStreakWindowStart, FLOOR_STREAK_MIN_DAYS,
+      );
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -1645,6 +1695,25 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
           </tbody>
         </table>
       </Card>
+      {scopeFloorIds && (
+        <Card className="mt-5 p-4">
+          <p className="mb-3 text-sm font-semibold text-slate-700">Long-leave watch (3+ days)</p>
+          {floorStreakData.loading ? (
+            <p className="text-xs text-slate-400">Loading...</p>
+          ) : floorStreaks.length === 0 ? (
+            <EmptyNote text="Nobody on your floor has an ongoing 3+ day absence streak." />
+          ) : (
+            <ul className="space-y-1.5">
+              {floorStreaks.map(({ student, streak, capped }) => (
+                <li key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll})</span></span>
+                  <Badge tone={capped ? "rose" : "amber"}>{streak}{capped ? "+" : ""} days absent</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
