@@ -211,8 +211,19 @@ model PendingChange {
   createdAt     DateTime @default(now())
 }
 
-// One row per classroom per day — the heart of the daily workflow. The chain
-// is exactly three stages now (AO does not approve daily attendance):
+// Twice a day: every classroom gets one independent AttendanceRecord per
+// session, running the exact same pipeline (headcount through
+// coordinatorApproved) separately for each. Nothing about a session's
+// approval or absentee state is shared with the other session for the
+// same class/date — they're two full, unrelated rows that happen to share
+// a date and classId.
+enum Session {
+  MORNING
+  AFTERNOON
+}
+
+// One row per classroom per day per session — the heart of the daily workflow.
+// The chain is exactly three stages now (AO does not approve daily attendance):
 //   doApproved  →  teacherApproved  →  coordinatorApproved  →  published
 // Each *Approved field holds a small object like
 // { by: "userId", byName: "Priya", at: "2026-07-04T09:15:00.000Z" }, or stays
@@ -231,6 +242,7 @@ model AttendanceRecord {
   date    String // "YYYY-MM-DD"
   classId String
   class   Classroom @relation(fields: [classId], references: [id])
+  session Session  @default(MORNING) // existing rows predate sessions and were backfilled as MORNING — see the migration this ships with
 
   headcount      Int? // physical count the DO enters before they can approve
   wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason, isLocal} } — isLocal is a snapshot of the student's boarding status at the moment they were marked absent, not a live lookup
@@ -256,5 +268,5 @@ model AttendanceRecord {
   // { fromStage, fromName, toStage, reason, at }
   sentBack Json?
 
-  @@unique([date, classId])
+  @@unique([date, classId, session])
 }

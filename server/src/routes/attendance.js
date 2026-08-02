@@ -1,11 +1,12 @@
 // ============================================================================
 // The daily attendance workflow — the most important file in this project.
 //
-// One AttendanceRecord row exists per (date, classroom) pair. Every route
-// below reads or writes one of those rows, always re-checking permissions
-// and the current state before allowing a change — the frontend's own
-// checks (greying out a button, etc.) are just for a nice UI; the real
-// rules are enforced here.
+// One AttendanceRecord row exists per (date, classroom, session) triple —
+// two independent rows per class per day, MORNING and AFTERNOON, each
+// running the full pipeline below on its own. Every route below reads or
+// writes one of those rows, always re-checking permissions and the current
+// state before allowing a change — the frontend's own checks (greying out
+// a button, etc.) are just for a nice UI; the real rules are enforced here.
 //
 // The chain is exactly three human stages — AO does NOT approve daily
 // attendance, only master data and staff accounts:
@@ -28,10 +29,23 @@ import { isStudentOnWardensFloor } from "../wardenScope.js";
 
 export const attendanceRouter = Router();
 
-async function getOrCreateRecord(date, classId) {
-  const existing = await prisma.attendanceRecord.findUnique({ where: { date_classId: { date, classId } } });
+const SESSIONS = ["MORNING", "AFTERNOON"];
+
+// The :session URL segment travels lowercase (see api.js), the Session enum
+// is uppercase — this is the one place that reconciles them. An
+// unrecognized value defaults to MORNING rather than rejecting the request:
+// every caller today sends "morning" literally (no session-switching UI
+// yet — see App.jsx), so this is just future-proofing against a stale
+// client, not a validation boundary this phase needs to enforce strictly.
+function normalizeSession(raw) {
+  const s = String(raw || "").toUpperCase();
+  return SESSIONS.includes(s) ? s : "MORNING";
+}
+
+async function getOrCreateRecord(date, classId, session) {
+  const existing = await prisma.attendanceRecord.findUnique({ where: { date_classId_session: { date, classId, session } } });
   if (existing) return existing;
-  return prisma.attendanceRecord.create({ data: { date, classId } });
+  return prisma.attendanceRecord.create({ data: { date, classId, session } });
 }
 
 const nowTs = () => new Date().toISOString();
@@ -43,11 +57,12 @@ const nowTs = () => new Date().toISOString();
 // again). Locked once the DO has approved — see the doApproved check below.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
-  "/attendance/:date/:classId/absence",
+  "/attendance/:date/:classId/:session/absence",
   requireAuth,
   requireRole("WARDEN", "LAI"),
   async (req, res) => {
     const { date, classId } = req.params;
+    const session = normalizeSession(req.params.session);
     const { studentId, reason } = req.body || {};
     if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -64,7 +79,7 @@ attendanceRouter.post(
       return res.status(400).json({ error: `Reason must be one of: ${DAILY_REASONS.join(", ")} (use the "away" action for students who went home)` });
     }
 
-    const record = await getOrCreateRecord(date, classId);
+    const record = await getOrCreateRecord(date, classId, session);
     if (record.doApproved) return res.status(409).json({ error: "This list is already verified by the DO \u2014 no further changes needed" });
 
     const field = req.user.role === "WARDEN" ? "wardenAbsences" : "laiAbsences";
@@ -87,8 +102,9 @@ attendanceRouter.post(
 // below. This step is just "yes, this reported absentee really is absent"
 // (or the opposite: the report was wrong and they're actually here).
 // --------------------------------------------------------------------------
-attendanceRouter.post("/attendance/:date/:classId/confirm", requireAuth, requireRole("DO"), async (req, res) => {
+attendanceRouter.post("/attendance/:date/:classId/:session/confirm", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
   const { studentId } = req.body || {};
   if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -97,7 +113,7 @@ attendanceRouter.post("/attendance/:date/:classId/confirm", requireAuth, require
     return res.status(403).json({ error: "This class's floor isn't assigned to you" });
   }
 
-  const record = await getOrCreateRecord(date, classId);
+  const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
@@ -112,8 +128,9 @@ attendanceRouter.post("/attendance/:date/:classId/confirm", requireAuth, require
 // LAI reported absent turns out to actually be sitting right there. This
 // removes them from the absentee list entirely rather than "confirming"
 // them, and clears out any confirmation/reason they'd already picked up.
-attendanceRouter.post("/attendance/:date/:classId/correct-presence", requireAuth, requireRole("DO"), async (req, res) => {
+attendanceRouter.post("/attendance/:date/:classId/:session/correct-presence", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
   const { studentId } = req.body || {};
   if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -122,7 +139,7 @@ attendanceRouter.post("/attendance/:date/:classId/correct-presence", requireAuth
     return res.status(403).json({ error: "This class's floor isn't assigned to you" });
   }
 
-  const record = await getOrCreateRecord(date, classId);
+  const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
   const wardenAbsences = { ...(record.wardenAbsences || {}) };
@@ -147,8 +164,9 @@ attendanceRouter.post("/attendance/:date/:classId/correct-presence", requireAuth
 // been confirmed absent in Window 1 above — you can't have a reason for
 // someone you haven't actually confirmed is absent yet.
 // --------------------------------------------------------------------------
-attendanceRouter.post("/attendance/:date/:classId/reason", requireAuth, requireRole("DO"), async (req, res) => {
+attendanceRouter.post("/attendance/:date/:classId/:session/reason", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
   const { studentId, reason } = req.body || {};
   if (!studentId || !reason) return res.status(400).json({ error: "studentId and reason are required" });
 
@@ -157,7 +175,7 @@ attendanceRouter.post("/attendance/:date/:classId/reason", requireAuth, requireR
     return res.status(403).json({ error: "This class's floor isn't assigned to you" });
   }
 
-  const record = await getOrCreateRecord(date, classId);
+  const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
@@ -174,8 +192,9 @@ attendanceRouter.post("/attendance/:date/:classId/reason", requireAuth, requireR
 // --------------------------------------------------------------------------
 // STEP 3 — DO records the physical headcount, before they're allowed to approve.
 // --------------------------------------------------------------------------
-attendanceRouter.post("/attendance/:date/:classId/headcount", requireAuth, requireRole("DO"), async (req, res) => {
+attendanceRouter.post("/attendance/:date/:classId/:session/headcount", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
   const { headcount } = req.body || {};
   if (typeof headcount !== "number") return res.status(400).json({ error: "headcount must be a number" });
 
@@ -184,7 +203,7 @@ attendanceRouter.post("/attendance/:date/:classId/headcount", requireAuth, requi
     return res.status(403).json({ error: "This class's floor isn't assigned to you" });
   }
 
-  const record = await getOrCreateRecord(date, classId);
+  const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
   const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { headcount } });
@@ -200,11 +219,12 @@ const STAGE_ROLE_TO_KEY = Object.fromEntries(STAGES.map((s) => [s.role, s.key]))
 // user's role.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
-  "/attendance/:date/:classId/approve",
+  "/attendance/:date/:classId/:session/approve",
   requireAuth,
   requireRole("DO", "LECTURER", "COORDINATOR"),
   async (req, res) => {
     const { date, classId } = req.params;
+    const session = normalizeSession(req.params.session);
     const stageKey = STAGE_ROLE_TO_KEY[req.user.role];
 
     const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
@@ -214,7 +234,7 @@ attendanceRouter.post(
       return res.status(403).json({ error: "This class's floor isn't assigned to you" });
     }
 
-    const record = await getOrCreateRecord(date, classId);
+    const record = await getOrCreateRecord(date, classId, session);
     if (record[stageKey]) return res.status(409).json({ error: "You've already approved this" });
 
     const priorKey = priorStageKey(stageKey);
@@ -260,11 +280,12 @@ attendanceRouter.post(
 // whenever doApproved is null.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
-  "/attendance/:date/:classId/send-back",
+  "/attendance/:date/:classId/:session/send-back",
   requireAuth,
   requireRole("DO", "LECTURER", "COORDINATOR"),
   async (req, res) => {
     const { date, classId } = req.params;
+    const session = normalizeSession(req.params.session);
     const { reason } = req.body || {};
     if (!reason) return res.status(400).json({ error: "A reason is required so they know what to fix" });
 
@@ -275,7 +296,7 @@ attendanceRouter.post(
       return res.status(403).json({ error: "This class's floor isn't assigned to you" });
     }
 
-    const record = await getOrCreateRecord(date, classId);
+    const record = await getOrCreateRecord(date, classId, session);
     if (record[stageKey]) return res.status(409).json({ error: "You've already approved this \u2014 too late to send back" });
 
     const priorKey = priorStageKey(stageKey);
@@ -306,18 +327,20 @@ attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COOR
   let stillBlocked = 0;
 
   for (const c of classes) {
-    const record = await getOrCreateRecord(date, c.id);
-    const idx = currentStageIndex(record);
-    if (idx === 0) {
-      if (!record.doApproved) stillBlocked++;
-      continue;
-    }
-    if (idx < STAGES.length && !record.forcedPublish) {
-      await prisma.attendanceRecord.update({
-        where: { id: record.id },
-        data: { forcedPublish: true, skippedStages: STAGES.slice(idx).map((s) => s.key) },
-      });
-      count++;
+    for (const session of SESSIONS) {
+      const record = await getOrCreateRecord(date, c.id, session);
+      const idx = currentStageIndex(record);
+      if (idx === 0) {
+        if (!record.doApproved) stillBlocked++;
+        continue;
+      }
+      if (idx < STAGES.length && !record.forcedPublish) {
+        await prisma.attendanceRecord.update({
+          where: { id: record.id },
+          data: { forcedPublish: true, skippedStages: STAGES.slice(idx).map((s) => s.key) },
+        });
+        count++;
+      }
     }
   }
   res.json({ autoPassedCount: count, stillBlockedOnDO: stillBlocked });
@@ -332,8 +355,8 @@ attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COOR
 // AttendanceRecord.date), so a plain string comparison sorts identically to
 // a real date comparison — no need to parse into Date objects here or in
 // the Prisma query itself. Returns the same
-// { [date]: { [classId]: AttendanceRecord } } shape /state builds, just
-// under an "attendance" key scoped to [from, to].
+// { [date]: { [classId]: { [session]: AttendanceRecord } } } shape /state
+// builds, just under an "attendance" key scoped to [from, to].
 // --------------------------------------------------------------------------
 attendanceRouter.get("/attendance", requireAuth, async (req, res) => {
   const { from, to } = req.query;
@@ -345,7 +368,8 @@ attendanceRouter.get("/attendance", requireAuth, async (req, res) => {
   const attendance = {};
   for (const row of rows) {
     attendance[row.date] = attendance[row.date] || {};
-    attendance[row.date][row.classId] = row;
+    attendance[row.date][row.classId] = attendance[row.date][row.classId] || {};
+    attendance[row.date][row.classId][row.session] = row;
   }
 
   res.json({ attendance });

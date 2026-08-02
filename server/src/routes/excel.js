@@ -336,8 +336,14 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "date is required" });
 
+  // Scoped to the MORNING session for now — with two independent records
+  // per class per day (see schema.prisma's Session enum), a plain
+  // { where: { date } } would return both and let one arbitrarily clobber
+  // the other in recordByClassId below. Same phase-1 simplification as
+  // computeLongLeaveStreaks/studentDayHistory on the frontend: treat "the
+  // day's record" as the morning one until session-aware reporting lands.
   const [records, classes, students] = await Promise.all([
-    prisma.attendanceRecord.findMany({ where: { date } }),
+    prisma.attendanceRecord.findMany({ where: { date, session: "MORNING" } }),
     prisma.classroom.findMany(),
     prisma.student.findMany(),
   ]);

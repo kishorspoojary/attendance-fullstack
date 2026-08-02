@@ -27,12 +27,13 @@ stateRouter.get("/state", requireAuth, async (req, res) => {
     prisma.attendanceRecord.findMany(),
   ]);
 
-  // The frontend wants attendance shaped as attendance[date][classId], but
-  // Prisma just gives us a flat list of rows — this loop re-groups them.
+  // The frontend wants attendance shaped as attendance[date][classId][session],
+  // but Prisma just gives us a flat list of rows — this loop re-groups them.
   const attendance = {};
   for (const row of attendanceRows) {
     attendance[row.date] = attendance[row.date] || {};
-    attendance[row.date][row.classId] = row;
+    attendance[row.date][row.classId] = attendance[row.date][row.classId] || {};
+    attendance[row.date][row.classId][row.session] = row;
   }
 
   res.json({

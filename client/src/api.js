@@ -124,13 +124,16 @@ export const api = {
   getStaffDirectory: () => request("/staff-directory"),
 
   // ---- Daily attendance workflow ----
-  setAbsence: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
-  confirmAbsent: (date, classId, studentId) => request(`/attendance/${date}/${classId}/confirm`, { method: "POST", body: { studentId } }),
-  correctPresence: (date, classId, studentId) => request(`/attendance/${date}/${classId}/correct-presence`, { method: "POST", body: { studentId } }),
-  verifyReason: (date, classId, studentId, reason) => request(`/attendance/${date}/${classId}/reason`, { method: "POST", body: { studentId, reason } }),
-  setHeadcount: (date, classId, headcount) => request(`/attendance/${date}/${classId}/headcount`, { method: "POST", body: { headcount } }),
-  approveStage: (date, classId) => request(`/attendance/${date}/${classId}/approve`, { method: "POST" }),
-  sendBack: (date, classId, reason) => request(`/attendance/${date}/${classId}/send-back`, { method: "POST", body: { reason } }),
+  // `session` defaults to "morning" at every call site below — no
+  // session-switching UI yet (see App.jsx), so every call is pinned to the
+  // morning record until that lands.
+  setAbsence: (date, classId, studentId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
+  confirmAbsent: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/confirm`, { method: "POST", body: { studentId } }),
+  correctPresence: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/correct-presence`, { method: "POST", body: { studentId } }),
+  verifyReason: (date, classId, studentId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/reason`, { method: "POST", body: { studentId, reason } }),
+  setHeadcount: (date, classId, headcount, session = "morning") => request(`/attendance/${date}/${classId}/${session}/headcount`, { method: "POST", body: { headcount } }),
+  approveStage: (date, classId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/approve`, { method: "POST" }),
+  sendBack: (date, classId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/send-back`, { method: "POST", body: { reason } }),
   runCutoff: (date) => request(`/attendance/${date}/cutoff`, { method: "POST" }),
 
   // ---- Persistent "away" status (Warden only) ----

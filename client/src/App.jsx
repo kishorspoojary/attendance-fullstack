@@ -78,6 +78,26 @@ function emptyRecord() {
   };
 }
 
+// Every classroom now has two independent AttendanceRecords per day (see
+// schema.prisma's Session enum) — state.attendance[date][classId] and GET
+// /attendance's rangeData.data[date] are both keyed classId -> session ->
+// record. No screen has session-switching UI yet, so every read in this
+// phase is pinned to MORNING via this one default — see stages.js's
+// comment in App.jsx (this same file) on why session-aware history/streak
+// logic is deliberately deferred to a later phase.
+const DEFAULT_SESSION = "MORNING";
+
+// Resolves a classId -> session -> record map down to a plain
+// classId -> record map for one session (MORNING unless overridden).
+function sessionScoped(byClassId, session = DEFAULT_SESSION) {
+  const day = {};
+  for (const classId of Object.keys(byClassId || {})) {
+    const rec = byClassId[classId]?.[session];
+    if (rec) day[classId] = rec;
+  }
+  return day;
+}
+
 const ROLE_LABELS = {
   PRINCIPAL: "Principal", AO: "AO", COORDINATOR: "Coordinator", DB_MANAGER: "Database Manager",
   WARDEN: "Warden", DO: "Discipline Officer", LECTURER: "Lecturer", LAI: "Local Attendance Incharge",
@@ -1078,13 +1098,16 @@ const LONG_LEAVE_MIN_DAYS = 5;
 const LONG_LEAVE_WINDOW_DAYS = 7;
 
 // Scans a fetched attendance window (GET /attendance's {[date]: {[classId]:
-// record}} shape) for students on a 5+ consecutive day absence streak
-// ending at `viewDate` — i.e. currently, actively absent, not a past streak
-// that already resolved. Walks backward one calendar day at a time from
-// viewDate; a day with NO attendance record for the student's class breaks
-// the streak immediately, per this feature's design decision: "no record"
-// means nobody marked attendance that day, which is ambiguous, not proof of
-// presence, and must never be treated as a skippable gap.
+// {[session]: record}}} shape) for students on a 5+ consecutive day absence
+// streak ending at `viewDate` — i.e. currently, actively absent, not a past
+// streak that already resolved. Walks backward one calendar day at a time
+// from viewDate; a day with NO attendance record for the student's class
+// breaks the streak immediately, per this feature's design decision: "no
+// record" means nobody marked attendance that day, which is ambiguous, not
+// proof of presence, and must never be treated as a skippable gap. Scoped
+// to DEFAULT_SESSION (MORNING) — see that constant's comment; "what counts
+// as an absent day" when sessions disagree is deliberately deferred, not
+// solved here.
 //
 // Deliberately scans only wardenAbsences/laiAbsences, never
 // Student.awayReason/awaySince — those are a different, disjoint concept: a
@@ -1103,7 +1126,7 @@ const LONG_LEAVE_WINDOW_DAYS = 7;
 function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartDate) {
   const results = [];
   for (const student of state.students) {
-    const todayRecord = attendanceWindow[viewDate]?.[student.classId];
+    const todayRecord = attendanceWindow[viewDate]?.[student.classId]?.[DEFAULT_SESSION];
     const absentToday = !!todayRecord && (!!todayRecord.wardenAbsences?.[student.id] || !!todayRecord.laiAbsences?.[student.id]);
     if (!absentToday) continue;
 
@@ -1112,7 +1135,7 @@ function computeLongLeaveStreaks(state, viewDate, attendanceWindow, windowStartD
     let d = viewDate;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const rec = attendanceWindow[d]?.[student.classId];
+      const rec = attendanceWindow[d]?.[student.classId]?.[DEFAULT_SESSION];
       if (!rec) break; // no record for this date — ambiguous, breaks the streak
       const wasAbsent = !!rec.wardenAbsences?.[student.id] || !!rec.laiAbsences?.[student.id];
       if (!wasAbsent) break;
@@ -1269,12 +1292,14 @@ const STUDENT_HISTORY_DAYS = 7;
 // kept distinct from both present and absent (not folded into either),
 // same ambiguous-gap treatment computeLongLeaveStreaks already applies to
 // the streak scan. Reads state.attendance directly — already the full,
-// unfiltered history (see GET /state) — no fetch needed.
+// unfiltered history (see GET /state) — no fetch needed. Scoped to
+// DEFAULT_SESSION (MORNING) — see that constant's comment; a day with only
+// an afternoon record shows as "none" here for now.
 function studentDayHistory(state, student, viewDate) {
   const days = [];
   for (let i = STUDENT_HISTORY_DAYS - 1; i >= 0; i--) {
     const date = shiftDateStr(viewDate, -i);
-    const record = state.attendance[date]?.[student.classId];
+    const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
     const status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id]) ? "absent" : "present";
     days.push({ date, status });
   }
@@ -1285,12 +1310,13 @@ function studentDayHistory(state, student, viewDate) {
 // in full (through viewDate — a date beyond what's being viewed shouldn't
 // count toward "as of now"), the same way. Days with no record for this
 // class are excluded from the denominator entirely, not counted as present
-// or absent — per the same design decision as the streak scan.
+// or absent — per the same design decision as the streak scan. Scoped to
+// DEFAULT_SESSION (MORNING), same phase-1 simplification as studentDayHistory.
 function studentAllTimeStats(state, student, viewDate) {
   let present = 0, withRecord = 0;
   for (const date of Object.keys(state.attendance)) {
     if (date > viewDate) continue;
-    const record = state.attendance[date]?.[student.classId];
+    const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
     if (!record) continue;
     withRecord++;
     if (!(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id])) present++;
@@ -1319,7 +1345,7 @@ const HISTORY_SQUARE_CLASS = { present: "bg-emerald-500", absent: "bg-rose-500",
 // disagree on the same class.
 function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
   const cls = state.classes.find((c) => c.id === classId);
-  const day = state.attendance[viewDate] || {};
+  const day = sessionScoped(state.attendance[viewDate]);
   const record = day[classId] || emptyRecord();
   const [row] = classAttendanceForDate(state, cls ? [cls] : [], day);
 
@@ -1453,7 +1479,7 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
 function PrincipalHeroDashboard({ state, date }) {
   const [viewDate, setViewDate] = useState(date);
   const [selectedClassId, setSelectedClassId] = useState(null);
-  const day = state.attendance[viewDate] || {};
+  const day = sessionScoped(state.attendance[viewDate]);
   const classRows = classAttendanceForDate(state, state.classes, day);
   const isToday = viewDate === date;
   const todayPct = aggregatePct(classRows);
@@ -1476,8 +1502,8 @@ function PrincipalHeroDashboard({ state, date }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowStartDate, viewDate]);
 
-  const compareDay = rangeData.data[compareDate] || {};
-  const compareHasData = !!rangeData.data[compareDate];
+  const compareDay = sessionScoped(rangeData.data[compareDate]);
+  const compareHasData = Object.keys(compareDay).length > 0;
   const yesterdayPct = compareHasData ? aggregatePctFromRecordedOnly(state, state.classes, compareDay) : null;
   const delta = todayPct != null && yesterdayPct != null ? Math.round(todayPct) - Math.round(yesterdayPct) : null;
 
@@ -1537,7 +1563,7 @@ function PrincipalHeroDashboard({ state, date }) {
 
 function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
-  const day = state.attendance[viewDate] || {};
+  const day = sessionScoped(state.attendance[viewDate]);
   const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
   const rows = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
@@ -2649,7 +2675,7 @@ function ViewStudents({ me }) {
 /* 5c. Shared approval queue (Lecturer and Coordinator)       */
 /* ---------------------------------------------------------------- */
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note }) {
-  const day = state.attendance[date] || {};
+  const day = sessionScoped(state.attendance[date]);
   const withRecord = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const items = withRecord.filter(({ r }) => (requiredPriorKey ? !!r[requiredPriorKey] : true) && !r[stageKey]);
   const done = withRecord.filter(({ r }) => !!r[stageKey]);
@@ -3982,7 +4008,7 @@ function resolveAbsenceReason(studentId, record, student) {
 
 function AbsenteesView({ state }) {
   const [viewDate, setViewDate] = useState(todayStr());
-  const day = state.attendance[viewDate] || {};
+  const day = sessionScoped(state.attendance[viewDate]);
 
   // Grouped by class, same Collapsible pattern as everywhere else, but
   // expanded by default (defaultOpen, not forceOpen — still individually
@@ -4264,7 +4290,7 @@ function WardenScreen({ state, date, me, runAction }) {
       <div className="space-y-4">
         {Object.entries(groupBy(visiblePresent, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
-          const r = state.attendance[date]?.[classId] || emptyRecord();
+          const r = state.attendance[date]?.[classId]?.[DEFAULT_SESSION] || emptyRecord();
           const locked = !!r.doApproved;
           const bucket = r.wardenAbsences || {};
           const sentBackHere = r.sentBack?.toStage === "warden_lai";
@@ -4340,7 +4366,7 @@ function LAIScreen({ state, date, me, runAction }) {
       <div className="space-y-4">
         {Object.entries(groupBy(visible, (s) => s.classId)).map(([classId, list]) => {
           const cls = state.classes.find((c) => c.id === classId);
-          const r = state.attendance[date]?.[classId] || emptyRecord();
+          const r = state.attendance[date]?.[classId]?.[DEFAULT_SESSION] || emptyRecord();
           const locked = !!r.doApproved;
           const bucket = r.laiAbsences || {};
           const sentBackHere = r.sentBack?.toStage === "warden_lai";
@@ -4507,7 +4533,7 @@ function DOScreen({ state, date, me, runAction }) {
       {poolmates.length > 0 && <p className="mb-4 text-xs text-slate-400">Sharing this floor with: {poolmates.map((p) => p.name).join(", ")}</p>}
       <div className="space-y-4">
         {floorClasses.map((c) => (
-          <DoClassCard key={c.id} c={c} record={state.attendance[date]?.[c.id] || emptyRecord()} date={date} students={state.students} runAction={runAction} />
+          <DoClassCard key={c.id} c={c} record={state.attendance[date]?.[c.id]?.[DEFAULT_SESSION] || emptyRecord()} date={date} students={state.students} runAction={runAction} />
         ))}
         {floorClasses.length === 0 && <EmptyNote text="No floor assigned to you yet." />}
       </div>
