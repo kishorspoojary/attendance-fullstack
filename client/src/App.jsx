@@ -948,7 +948,7 @@ export default function App() {
               {activeTab === "mychanges" && <MyChanges state={state} me={me} runAction={runAction} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
-              {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." scopeFloorIds={me.floorIds} />}
+              {activeTab === "teacher" && <LecturerApprovals state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "lai" && <LAIScreen state={state} date={date} me={me} runAction={runAction} />}
             </>
           )}
@@ -2794,6 +2794,73 @@ function CoordinatorApprovals({ state, date, runAction }) {
         </div>
         <div className="mt-3"><Btn variant="outline" onClick={() => runAction(() => api.runCutoff(date), "Cutoff run")}><Clock size={14} /> Run cutoff now (demo)</Btn></div>
       </div>
+    </div>
+  );
+}
+
+// Local "HH:MM" for comparing against a floor's dailyDeadline — UX-only
+// (enables/disables the cutoff button); the server re-validates
+// authoritatively and is the real gate, same "HH:MM strings sort like the
+// real value" trick as the backend's own nowHHMM.
+function nowHHMM() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// One floor's optional deadline: set/clear it, and once it's passed, a
+// button to force-publish anything on this floor still waiting on a
+// Teacher or Coordinator approval — this app has no scheduler, so the
+// deadline never fires anything by itself, it only unlocks this button for
+// a human to click. Never bypasses the DO stage, same rule as Coordinator's
+// institution-wide cutoff below in CoordinatorApprovals.
+function FloorDeadlineCard({ floor, date, runAction }) {
+  const [time, setTime] = useState(floor.dailyDeadline || "");
+  const passed = !!floor.dailyDeadline && nowHHMM() >= floor.dailyDeadline;
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+      <div className="flex items-start gap-2 text-sm text-amber-800">
+        <Bell size={15} className="mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="font-medium">{floor.name} — deadline</p>
+          <p className="mt-0.5 text-amber-700">Optional. Once it passes, you can force-publish anything on this floor still waiting on a Teacher or Coordinator approval — never bypasses the DO stage.</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input type="time" className={`${inputCls} w-32`} value={time} onChange={(e) => setTime(e.target.value)} />
+            <Btn size="sm" variant="outline" onClick={() => runAction(() => api.setFloorDeadline(floor.id, time || null), time ? "Deadline set" : "Deadline cleared")}>Save</Btn>
+            {floor.dailyDeadline && (
+              <Btn size="sm" variant="outline" onClick={() => { setTime(""); runAction(() => api.setFloorDeadline(floor.id, null), "Deadline cleared"); }}>Clear</Btn>
+            )}
+          </div>
+        </div>
+      </div>
+      {floor.dailyDeadline && (
+        <div className="mt-3">
+          <Btn variant="outline" disabled={!passed} onClick={() => runAction(() => api.runFloorCutoff(date, floor.id), "Cutoff run for this floor")}>
+            <Clock size={14} /> {passed ? "Run cutoff for this floor now" : `Unlocks at ${floor.dailyDeadline}`}
+          </Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lecturer's own approval tab: their floor-scoped queue (the fix — see
+// ApprovalQueue's scopeFloorIds), plus one deadline card per floor they
+// cover (a Lecturer can be pooled across more than one, per the modeling
+// note at the top of schema.prisma).
+function LecturerApprovals({ state, date, me, runAction }) {
+  const floors = (me.floorIds || [])
+    .map((fid) => state.collegeFloors.find((f) => f.id === fid))
+    .filter(Boolean);
+  return (
+    <div>
+      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." scopeFloorIds={me.floorIds} />
+      {floors.length > 0 && (
+        <div className="mt-6 space-y-3">
+          {floors.map((floor) => (
+            <FloorDeadlineCard key={floor.id} floor={floor} date={date} runAction={runAction} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

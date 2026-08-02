@@ -126,6 +126,16 @@ model CollegeFloor {
   id         String      @id @default(cuid())
   name       String
   classrooms Classroom[]
+  // Optional, Lecturer-set target time for the day's attendance to be done
+  // by, "HH:MM" 24-hour local time (e.g. "14:00") — shared by everyone
+  // pooled on this floor (Wardens/DOs/Lecturers/Coordinator all see the
+  // same one, since floors are a pooled assignment — see the modeling note
+  // at the top of this file). Purely advisory/gating, not a scheduler: this
+  // app has no cron, so nothing fires automatically when it passes. Once
+  // passed, it unlocks a floor-scoped version of Coordinator's global
+  // /attendance/:date/cutoff for any Lecturer on this floor — see
+  // routes/attendance.js's /floor-cutoff.
+  dailyDeadline String?
 }
 
 // "Classroom" is what the code calls it; to staff this is a "class" or

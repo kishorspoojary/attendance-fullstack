@@ -124,9 +124,9 @@ export const api = {
   getStaffDirectory: () => request("/staff-directory"),
 
   // ---- Daily attendance workflow ----
-  // `session` defaults to "morning" at every call site below — no
-  // session-switching UI yet (see App.jsx), so every call is pinned to the
-  // morning record until that lands.
+  // `session` defaults to "morning" when a caller doesn't pass one (older
+  // call sites that haven't been touched since Phase 1) — DOScreen's own
+  // session switcher (see App.jsx) always passes the real one explicitly.
   setAbsence: (date, classId, studentId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
   confirmAbsent: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/confirm`, { method: "POST", body: { studentId } }),
   correctPresence: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/correct-presence`, { method: "POST", body: { studentId } }),
@@ -135,6 +135,8 @@ export const api = {
   approveStage: (date, classId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/approve`, { method: "POST" }),
   sendBack: (date, classId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/send-back`, { method: "POST", body: { reason } }),
   runCutoff: (date) => request(`/attendance/${date}/cutoff`, { method: "POST" }),
+  runFloorCutoff: (date, collegeFloorId) => request(`/attendance/${date}/${collegeFloorId}/floor-cutoff`, { method: "POST" }),
+  setFloorDeadline: (collegeFloorId, time) => request(`/college-floors/${collegeFloorId}/deadline`, { method: "PUT", body: { time } }),
 
   // ---- Persistent "away" status (Warden only) ----
   markAway: (studentId, reason) => request(`/students/${studentId}/mark-away`, { method: "POST", body: { reason } }),

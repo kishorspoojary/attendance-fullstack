@@ -54,6 +54,15 @@ async function getOrCreateRecord(date, classId, session) {
 
 const nowTs = () => new Date().toISOString();
 
+// "HH:MM" 24-hour, zero-padded, server-local time — comparable with a plain
+// string comparison against CollegeFloor.dailyDeadline (same "zero-padded
+// string sorts like the real value" trick already used for AttendanceRecord
+// .date elsewhere in this file).
+const nowHHMM = () => {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
 // --------------------------------------------------------------------------
 // STEP 1 — Warden or LAI marks a student absent (or clears them).
 // "Upsert" style: the frontend always sends the reason it wants right now.
@@ -355,18 +364,13 @@ attendanceRouter.post(
   }
 );
 
-// --------------------------------------------------------------------------
-// STEP 6 — Coordinator's deadline cutoff (moved here from AO, since AO no
-// longer takes part in the daily chain at all).
-//
-// Force-publishes anything not fully approved by the deadline, tagged for
-// follow-up. Deliberately does NOT touch records still stuck at the DO
-// stage — that verification must be completed by a person, never
-// auto-passed.
-// --------------------------------------------------------------------------
-attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COORDINATOR"), async (req, res) => {
-  const { date } = req.params;
-  const classes = await prisma.classroom.findMany();
+// Shared by both cutoff routes below (the global one and the floor-scoped
+// one) — force-publishes anything not fully approved, for every
+// (classroom, session) pair in `classes`, tagged for follow-up. Deliberately
+// never touches records still stuck at the DO stage — that verification
+// must be completed by a person, never auto-passed. Same rule regardless of
+// who triggered it or how narrow the scope is.
+async function runCutoffForClasses(date, classes) {
   let count = 0;
   let stillBlocked = 0;
 
@@ -387,7 +391,64 @@ attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COOR
       }
     }
   }
-  res.json({ autoPassedCount: count, stillBlockedOnDO: stillBlocked });
+  return { autoPassedCount: count, stillBlockedOnDO: stillBlocked };
+}
+
+// --------------------------------------------------------------------------
+// STEP 6 — Coordinator's deadline cutoff (moved here from AO, since AO no
+// longer takes part in the daily chain at all). Institution-wide — every
+// classroom, every floor. See /attendance/:date/:collegeFloorId/floor-cutoff
+// below for a Lecturer's narrower, per-floor equivalent.
+// --------------------------------------------------------------------------
+attendanceRouter.post("/attendance/:date/cutoff", requireAuth, requireRole("COORDINATOR"), async (req, res) => {
+  const { date } = req.params;
+  const classes = await prisma.classroom.findMany();
+  res.json(await runCutoffForClasses(date, classes));
+});
+
+// --------------------------------------------------------------------------
+// Lecturer's own, floor-scoped version of the cutoff above. Gated on that
+// floor's optional dailyDeadline (set via PUT .../deadline below) actually
+// having passed — this app has no scheduler, so nothing fires on its own;
+// the deadline only unlocks this button for a human to click. Same
+// force-publish rule as the global cutoff, including never bypassing the DO
+// stage — a Lecturer's floor cutoff can auto-skip their OWN teacherApproved
+// stage exactly like Coordinator's global one already can on their behalf.
+// --------------------------------------------------------------------------
+attendanceRouter.post("/attendance/:date/:collegeFloorId/floor-cutoff", requireAuth, requireRole("LECTURER"), async (req, res) => {
+  const { date, collegeFloorId } = req.params;
+  if (!(req.user.floorIds || []).includes(collegeFloorId)) {
+    return res.status(403).json({ error: "This floor isn't assigned to you" });
+  }
+
+  const floor = await prisma.collegeFloor.findUnique({ where: { id: collegeFloorId } });
+  if (!floor) return res.status(404).json({ error: "Floor not found" });
+  if (!floor.dailyDeadline) return res.status(400).json({ error: "No deadline set for this floor" });
+  if (nowHHMM() < floor.dailyDeadline) {
+    return res.status(409).json({ error: `Deadline hasn't passed yet (set for ${floor.dailyDeadline})` });
+  }
+
+  const classes = await prisma.classroom.findMany({ where: { collegeFloorId } });
+  res.json(await runCutoffForClasses(date, classes));
+});
+
+// --------------------------------------------------------------------------
+// Set or clear a floor's optional daily deadline. Any Lecturer assigned to
+// the floor can change it — shared/pooled, same as the floor assignment
+// itself (see schema.prisma's CollegeFloor.dailyDeadline comment).
+// --------------------------------------------------------------------------
+attendanceRouter.put("/college-floors/:id/deadline", requireAuth, requireRole("LECTURER"), async (req, res) => {
+  const { id } = req.params;
+  if (!(req.user.floorIds || []).includes(id)) {
+    return res.status(403).json({ error: "This floor isn't assigned to you" });
+  }
+  const { time } = req.body || {};
+  if (time !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time || "")) {
+    return res.status(400).json({ error: "time must be \"HH:MM\" (24-hour) or null to clear" });
+  }
+
+  const floor = await prisma.collegeFloor.update({ where: { id }, data: { dailyDeadline: time } });
+  res.json({ floor });
 });
 
 // --------------------------------------------------------------------------
