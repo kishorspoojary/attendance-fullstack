@@ -1039,14 +1039,19 @@ function aggregatePctFromRecordedOnly(state, classesInScope, day) {
 // Large numeral + trend arrow. `delta` is in percentage points (today's %
 // minus yesterday's), or null if yesterday has no usable data to compare
 // against (nothing recorded, or today itself has no classes to report on).
+// Mobile-first: numeral and trend stack by default (a narrow phone screen
+// is the primary target), and only sit side by side once there's room —
+// the reverse of this file's usual "flex-wrap as a fallback" convention,
+// which was fine for admin screens built desktop-first but isn't right for
+// the first genuinely mobile-first view in the app.
 function HeroAttendanceNumber({ pct, delta, loadingTrend }) {
   const rounded = pct == null ? "—" : Math.round(pct);
   const TrendIcon = delta == null ? Minus : delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
   const trendTone = delta == null ? "text-slate-400" : delta > 0 ? "text-emerald-600" : delta < 0 ? "text-rose-600" : "text-slate-400";
   return (
-    <div className="flex items-end justify-between gap-4">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
       <div>
-        <div className="font-display text-5xl font-bold text-slate-800 sm:text-6xl">{rounded === "—" ? rounded : `${rounded}%`}</div>
+        <div className="font-display text-6xl font-bold text-slate-800">{rounded === "—" ? rounded : `${rounded}%`}</div>
         <p className="mt-1 text-xs text-slate-400">Institution-wide, today</p>
       </div>
       <div className={`flex items-center gap-1.5 text-sm font-medium ${trendTone}`}>
@@ -1211,13 +1216,18 @@ function PrincipalHeroDashboard({ state, date }) {
   const feedItems = buildAttentionFeed(state, date, classRows, longLeaveStreaks, isToday);
 
   return (
-    <div>
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+    // Capped width, not full-bleed: on a narrow phone this simply fills the
+    // screen as normal, but on a wider viewport it stays a single
+    // phone-proportioned column instead of stretching a giant numeral and
+    // a lot of empty space across a desktop-width content area — this view
+    // is designed for mobile first, not adapted from a desktop layout.
+    <div className="mx-auto w-full max-w-md sm:max-w-lg">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <SectionTitle icon={LayoutDashboard} title="Attendance" subtitle={isToday ? `Today — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`} />
-        <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+        <Field label="Date"><input type="date" max={date} className={`${inputCls} py-2.5 sm:w-auto`} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
       </div>
 
-      <Card className="mb-4 p-4">
+      <Card className="mb-4 p-5">
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
