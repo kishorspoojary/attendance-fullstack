@@ -925,7 +925,7 @@ export default function App() {
               {activeTab === "mychanges" && <MyChanges state={state} me={me} runAction={runAction} onEditBatch={(c) => { setEditBatch(c); setTab("structure"); }} />}
               {activeTab === "warden" && <WardenScreen state={state} date={date} me={me} runAction={runAction} />}
               {activeTab === "do" && <DOScreen state={state} date={date} me={me} runAction={runAction} />}
-              {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." />}
+              {activeTab === "teacher" && <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="teacherApproved" requiredPriorKey="doApproved" roleLabel="Lecturer" note="Lists appear once the Discipline Officer has verified them. Any Lecturer on the floor can file this." scopeFloorIds={me.floorIds} />}
               {activeTab === "lai" && <LAIScreen state={state} date={date} me={me} runAction={runAction} />}
             </>
           )}
@@ -2674,9 +2674,13 @@ function ViewStudents({ me }) {
 /* ---------------------------------------------------------------- */
 /* 5c. Shared approval queue (Lecturer and Coordinator)       */
 /* ---------------------------------------------------------------- */
-function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note }) {
+function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note, scopeFloorIds }) {
   const day = sessionScoped(state.attendance[date]);
-  const withRecord = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
+  // Coordinator sees the whole institution (scopeFloorIds omitted); Lecturer
+  // only their own assigned floor(s) — same scoping pattern as
+  // PrincipalDashboard's "status" tab, which this queue sits right next to.
+  const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
+  const withRecord = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const items = withRecord.filter(({ r }) => (requiredPriorKey ? !!r[requiredPriorKey] : true) && !r[stageKey]);
   const done = withRecord.filter(({ r }) => !!r[stageKey]);
 
