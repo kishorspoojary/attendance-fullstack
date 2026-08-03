@@ -1,11 +1,23 @@
-// The three sequential approval stages every daily attendance record moves
+// The two sequential approval stages every daily attendance record moves
 // through. AO does not approve daily attendance (only master-data changes
-// and staff accounts) — so Coordinator is the final human stage; once they
-// approve, the record is published straight to the Principal's report.
+// and staff accounts), and Coordinator no longer does either — Coordinator
+// is now an institution-wide observer only (still owns the deadline cutoff,
+// which force-publishes anything left incomplete, but doesn't sign off on
+// individual classes). Lecturer is the final human stage; once they
+// approve, the record is published straight to the Principal's report —
+// "published" means teacherApproved is truthy (or forcedPublish is true).
+//
+// AttendanceRecord.coordinatorApproved still exists as a real column —
+// deliberately not dropped, since it's genuine historical data for records
+// approved under the old three-stage pipeline — but it's no longer part of
+// STAGES and nothing in the live pipeline reads or writes it anymore. Old
+// records that have it set also always have teacherApproved set (Coordinator
+// could only ever approve after Lecturer had, under the old priorStageKey
+// gating), so they still read as correctly published under the new
+// definition without any backfill needed.
 export const STAGES = [
   { key: "doApproved", role: "DO", label: "DO verified" },
   { key: "teacherApproved", role: "LECTURER", label: "Lecturer approved" },
-  { key: "coordinatorApproved", role: "COORDINATOR", label: "Coordinator approved" },
 ];
 
 export function currentStageIndex(record) {

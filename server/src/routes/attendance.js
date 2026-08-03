@@ -8,16 +8,21 @@
 // state before allowing a change — the frontend's own checks (greying out
 // a button, etc.) are just for a nice UI; the real rules are enforced here.
 //
-// The chain is exactly three human stages — AO does NOT approve daily
-// attendance, only master data and staff accounts:
-//   DO  →  Lecturer  →  Coordinator  →  published
+// The chain is exactly two human stages — AO does NOT approve daily
+// attendance, only master data and staff accounts, and Coordinator no
+// longer approves daily attendance either (see stages.js):
+//   DO  →  Lecturer  →  published
+//
+// Coordinator is now an institution-wide observer only — no approve or
+// send-back capability on individual classes — but still owns the deadline
+// cutoff below, which is a deadline-override tool, not a stage approval.
 //
 // The routes, in the order they happen during a real day:
 //   1. POST .../absence     — Warden/LAI mark a student absent (with a reason, for Wardens)
 //   2. POST .../reason       — DO confirms/enters the reason for one absentee
 //   3. POST .../headcount    — DO records the physical headcount
-//   4. POST .../approve      — DO / Lecturer / Coordinator sign off, in order
-//   5. POST .../send-back    — DO / Lecturer / Coordinator can bounce it back one stage instead
+//   4. POST .../approve      — DO / Lecturer sign off, in order
+//   5. POST .../send-back    — DO / Lecturer can bounce it back one stage instead
 //   6. POST .../cutoff       — Coordinator can force-publish anything still open past the deadline
 // ============================================================================
 import { Router } from "express";
@@ -295,18 +300,19 @@ attendanceRouter.post("/attendance/:date/:classId/:session/headcount", requireAu
   res.json({ record: updated });
 });
 
-// Lookup: {"DO": "doApproved", "LECTURER": "teacherApproved", "COORDINATOR": "coordinatorApproved"}
+// Lookup: {"DO": "doApproved", "LECTURER": "teacherApproved"}
 const STAGE_ROLE_TO_KEY = Object.fromEntries(STAGES.map((s) => [s.role, s.key]));
 
 // --------------------------------------------------------------------------
-// STEP 4 — one shared route for all three approvals (DO, Lecturer,
-// Coordinator). Which stage gets set is determined entirely by the logged-in
-// user's role.
+// STEP 4 — one shared route for both approvals (DO, Lecturer). Which stage
+// gets set is determined entirely by the logged-in user's role. Coordinator
+// is deliberately not in requireRole below — they're an observer only now,
+// see this file's header comment.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
   "/attendance/:date/:classId/:session/approve",
   requireAuth,
-  requireRole("DO", "LECTURER", "COORDINATOR"),
+  requireRole("DO", "LECTURER"),
   async (req, res) => {
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
@@ -405,18 +411,19 @@ attendanceRouter.post("/attendance/:date/:classId/:session/co-sign", requireAuth
 });
 
 // --------------------------------------------------------------------------
-// STEP 5 — send back, instead of approving. Available to the same three
+// STEP 5 — send back, instead of approving. Available to the same two
 // roles as /approve, and only before that role's own stage is approved.
 // Un-does exactly one stage: the one right before the sender's. For DO
 // (nothing before it in STAGES — the "prior stage" is really the Warden/LAI
 // marking step, which isn't tracked as an approval field at all) this is
 // purely a note for them to see, since they're already free to edit
-// whenever doApproved is null.
+// whenever doApproved is null. Coordinator is deliberately not in
+// requireRole below — observer only now, see this file's header comment.
 // --------------------------------------------------------------------------
 attendanceRouter.post(
   "/attendance/:date/:classId/:session/send-back",
   requireAuth,
-  requireRole("DO", "LECTURER", "COORDINATOR"),
+  requireRole("DO", "LECTURER"),
   async (req, res) => {
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
