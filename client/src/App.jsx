@@ -2871,12 +2871,91 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
   );
 }
 
-// Coordinator is the last human stage now (AO no longer approves daily
-// attendance), so the deadline cutoff control lives here.
+// Coordinator's institution-wide, read-only view of the DO -> Lecturer
+// approval queue. Replaces the old ApprovalQueue-based approve/send-back
+// capability now that Coordinator only observes (see stages.js) — same
+// items/done split ApprovalQueue already uses for Lecturer's own queue
+// (doApproved set, teacherApproved not vs. teacherApproved set), same
+// per-class card content (absentees + reasons, away students, headcount,
+// sentBack banner), just no action buttons, and no floor scoping since
+// Coordinator isn't floor-bound. Deliberately a separate component from
+// ApprovalQueue rather than a readOnly prop bolted onto it — ApprovalQueue
+// is live infrastructure for Lecturer's actual approve flow, not something
+// to touch for an additive, Coordinator-only view. Same MORNING-only
+// session default ApprovalQueue already has — not fixed here, a
+// pre-existing simplification, not new to this component.
+function CoordinatorObserverView({ state, date }) {
+  const day = sessionScoped(state.attendance[date]);
+  const withRecord = state.classes.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
+  const awaitingLecturer = withRecord.filter(({ r }) => !!r.doApproved && !r.teacherApproved);
+  const lecturerApproved = withRecord.filter(({ r }) => !!r.teacherApproved);
+
+  const renderCard = ({ c, r }) => {
+    const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}) }).map(([sid, meta]) => ({
+      student: state.students.find((s) => s.id === sid),
+      reason: r.doVerified?.[sid]?.reason || meta.reason,
+    }));
+    const away = state.students.filter((s) => s.classId === c.id && s.awayReason);
+    const count = absentees.length + away.length;
+    return (
+      <Card key={c.id} className="p-4">
+        <SentBackBanner record={r} />
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="font-medium text-slate-800">{c.name}</div>
+            <div className="text-xs text-slate-500">{count} absent · headcount {r.headcount ?? "—"}</div>
+          </div>
+          {r.teacherApproved && (
+            <div className="text-right text-xs text-slate-400">
+              <div>Approved by {r.teacherApproved.byName} · {formatTime(r.teacherApproved.at)}</div>
+              {r.teacherCoSignedBy && <div className="text-blue-600">Co-signed by {r.teacherCoSignedBy.byName}</div>}
+            </div>
+          )}
+        </div>
+        {count > 0 && (
+          <ul className="mt-2 space-y-1">
+            {absentees.map(({ student, reason }) => student && (
+              <li key={student.id} className="flex justify-between rounded bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
+                <span>{student.name} ({student.roll})</span><span className="text-slate-400">{reason || "no reason recorded"}</span>
+              </li>
+            ))}
+            {away.map((s) => (
+              <li key={s.id} className="flex justify-between rounded bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
+                <span>{s.name} ({s.roll})</span><span className="text-slate-400">Away — {s.awayReason}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    );
+  };
+
+  return (
+    <div>
+      <SectionTitle icon={ClipboardCheck} title="Attendance activity" subtitle="Read-only, institution-wide — Coordinator no longer approves individual classes." />
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Awaiting Lecturer</p>
+      {awaitingLecturer.length === 0 ? (
+        <EmptyNote text="Nothing waiting on a Lecturer right now." />
+      ) : (
+        <div className="space-y-3">{awaitingLecturer.map(renderCard)}</div>
+      )}
+      <p className="mb-2 mt-8 text-xs font-semibold uppercase tracking-wide text-slate-400">Lecturer approved</p>
+      {lecturerApproved.length === 0 ? (
+        <EmptyNote text="No classes approved by a Lecturer yet." />
+      ) : (
+        <div className="space-y-3">{lecturerApproved.map(renderCard)}</div>
+      )}
+    </div>
+  );
+}
+
+// Coordinator no longer approves daily attendance — Lecturer is the last
+// human stage now (see stages.js) — but still owns the deadline cutoff
+// below, a deadline-override tool rather than a stage approval.
 function CoordinatorApprovals({ state, date, runAction }) {
   return (
     <div>
-      <ApprovalQueue state={state} date={date} runAction={runAction} stageKey="coordinatorApproved" requiredPriorKey="teacherApproved" roleLabel="Coordinator" note="Lists appear here once the Lecturer has filed them. Approving here publishes straight to the Principal's report." />
+      <CoordinatorObserverView state={state} date={date} />
       <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
         <div className="flex items-start gap-2 text-sm text-amber-800">
           <Bell size={15} className="mt-0.5 shrink-0" />
