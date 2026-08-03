@@ -128,9 +128,11 @@ model CollegeFloor {
   classrooms Classroom[]
   // Optional, Lecturer-set target time for the day's attendance to be done
   // by, "HH:MM" 24-hour local time (e.g. "14:00") — shared by everyone
-  // pooled on this floor (Wardens/DOs/Lecturers/Coordinator all see the
-  // same one, since floors are a pooled assignment — see the modeling note
-  // at the top of this file). Purely advisory/gating, not a scheduler: this
+  // pooled on this floor (DOs/Lecturers all see the same one, since
+  // CollegeFloor is a pooled assignment for those two roles — see the
+  // modeling note at the top of this file; Wardens pool on HostelFloor
+  // instead, a different hierarchy, and Coordinator isn't floor-bound at
+  // all). Purely advisory/gating, not a scheduler: this
   // app has no cron, so nothing fires automatically when it passes. Once
   // passed, it unlocks a floor-scoped version of Coordinator's global
   // /attendance/:date/cutoff for any Lecturer on this floor — see
@@ -223,7 +225,7 @@ model PendingChange {
 
 // Twice a day: every classroom gets one independent AttendanceRecord per
 // session, running the exact same pipeline (headcount through
-// coordinatorApproved) separately for each. Nothing about a session's
+// teacherApproved) separately for each. Nothing about a session's
 // approval or absentee state is shared with the other session for the
 // same class/date — they're two full, unrelated rows that happen to share
 // a date and classId.
@@ -233,11 +235,15 @@ enum Session {
 }
 
 // One row per classroom per day per session — the heart of the daily workflow.
-// The chain is exactly three stages now (AO does not approve daily attendance):
-//   doApproved  →  teacherApproved  →  coordinatorApproved  →  published
+// The chain is exactly two stages now (AO does not approve daily attendance,
+// and neither does Coordinator anymore — see stages.js):
+//   doApproved  →  teacherApproved  →  published
 // Each *Approved field holds a small object like
 // { by: "userId", byName: "Priya", at: "2026-07-04T09:15:00.000Z" }, or stays
-// null until that stage happens.
+// null until that stage happens. coordinatorApproved still exists as a real
+// column (genuine historical data from the old three-stage pipeline) but
+// isn't part of the live pipeline anymore — see stages.js's comment for why
+// old fully-approved records still read correctly as published without it.
 //
 // The DO's own work happens in two separate windows, at two different
 // times of day, because a DO walking into a classroom mid-period can check
@@ -266,9 +272,10 @@ model AttendanceRecord {
   coordinatorApproved Json?
   // Optional, additive — a second Lecturer on the same floor voluntarily
   // co-signing a class teacherApproved already covers. Never required,
-  // never gates anything downstream (Coordinator doesn't wait on it, the
-  // class is already fully approved without it); purely a visible second
-  // set of eyes for classes someone wants extra confidence on. Only
+  // never gates anything downstream — the class is already fully published
+  // once teacherApproved is set, nothing else in the pipeline waits on
+  // this; purely a visible second set of eyes for classes someone wants
+  // extra confidence on. Only
   // settable once teacherApproved exists, and only by a Lecturer other than
   // whoever set that — see routes/attendance.js's /co-sign.
   teacherCoSignedBy Json? // { by, byName, at } — same shape as the *Approved fields
@@ -280,7 +287,7 @@ model AttendanceRecord {
   forcedPublish Boolean @default(false)
   skippedStages Json    @default("[]")
 
-  // Send-back: when a stage (DO/Teacher/Coordinator) rejects what's in front
+  // Send-back: when a stage (DO/Lecturer) rejects what's in front
   // of them instead of approving it, this records why, so whoever receives
   // it understands the problem. Cleared once the record moves forward again.
   // { fromStage, fromName, toStage, reason, at }
