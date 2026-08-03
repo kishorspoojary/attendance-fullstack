@@ -45,14 +45,18 @@ function shiftDateStr(dateStr, delta) {
   return d.toISOString().slice(0, 10);
 }
 
-// The three approval stages, in order, mirrored from server/src/stages.js.
+// The two approval stages, in order, mirrored from server/src/stages.js.
 // (Duplicated rather than imported because the frontend and backend are
 // separate projects that don't share code.) AO does not approve daily
-// attendance — Coordinator is the last human stage.
+// attendance, and neither does Coordinator anymore — Lecturer is the last
+// human stage. AttendanceRecord.coordinatorApproved still exists as a real
+// field (genuine historical data from the old three-stage pipeline) but
+// isn't part of this array and nothing here reads or writes it — see
+// stages.js's comment for why old fully-approved records still read
+// correctly as published without it.
 const STAGES = [
   { key: "doApproved", label: "DO verified", pendingLabel: "Discipline Officer" },
   { key: "teacherApproved", label: "Lecturer approved", pendingLabel: "Lecturer" },
-  { key: "coordinatorApproved", label: "Coordinator approved", pendingLabel: "Coordinator" },
 ];
 function currentStageIndex(rec) {
   for (let i = 0; i < STAGES.length; i++) if (!rec[STAGES[i].key]) return i;
@@ -81,7 +85,6 @@ function classroomStatus(rec) {
     return { key: "auto_passed", label: `Auto-passed — missing: ${missing}`, tone: "rose" };
   }
   if (idx === STAGES.length) return { key: "published", label: "Published", tone: "emerald" };
-  if (idx === 2) return { key: "awaiting_coordinator", label: "Awaiting Coordinator", tone: "blue" };
   if (idx === 1) return { key: "awaiting_lecturer", label: sentBack ? "Sent back to you" : "Awaiting you", tone: sentBack ? "rose" : "blue" };
 
   // idx === 0 — everything before the DO's own approval, broken down further.
