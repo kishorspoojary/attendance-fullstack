@@ -85,7 +85,7 @@ function classroomStatus(rec) {
     return { key: "auto_passed", label: `Auto-passed — missing: ${missing}`, tone: "rose" };
   }
   if (idx === STAGES.length) return { key: "published", label: "Published", tone: "emerald" };
-  if (idx === 1) return { key: "awaiting_lecturer", label: sentBack ? "Sent back to you" : "Awaiting you", tone: sentBack ? "rose" : "blue" };
+  if (idx === STAGES.length - 1) return { key: "awaiting_lecturer", label: sentBack ? "Sent back to you" : "Awaiting you", tone: sentBack ? "rose" : "blue" };
 
   // idx === 0 — everything before the DO's own approval, broken down further.
   if (!hasAbsentees && rec.headcount == null) return { key: "not_started", label: "Not started", tone: "slate" };
@@ -1624,7 +1624,6 @@ function AttendanceStatusBoard({ state, date, scopeFloorIds, title, subtitle }) 
   const published = rows.filter((x) => currentStageIndex(x.r) === STAGES.length || x.r.forcedPublish).length;
   const verified = rows.filter((x) => currentStageIndex(x.r) === STAGES.length).length;
   const autoPassed = rows.filter((x) => x.r.forcedPublish && currentStageIndex(x.r) < STAGES.length).length;
-  const isToday = viewDate === date;
 
   // Floor-scoped early-warning streak watch, tighter threshold than the
   // Principal's institution-wide 5-day one (PrincipalHeroDashboard) — only
@@ -1653,7 +1652,7 @@ function AttendanceStatusBoard({ state, date, scopeFloorIds, title, subtitle }) 
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Published straight to you once a Lecturer approves — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`)} />
+        <SectionTitle icon={LayoutDashboard} title={title} subtitle={subtitle} />
         <div className="flex flex-wrap items-end gap-2">
           <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
         </div>
