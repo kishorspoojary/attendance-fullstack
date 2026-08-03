@@ -1003,19 +1003,26 @@ const BUCKET_RANGE_LABEL = { emerald: "≥90%", amber: "75-89%", rose: "<75%" };
 const BUCKET_BAR_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
 const BUCKET_DOT_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
 
-// Per-class attendance % for one date — 1 - absentCount/roster, reusing the
+// Per-class attendance % for one date — presentCount/roster, reusing the
 // same "union of wardenAbsences/laiAbsences keys" absentee count
-// AttendanceStatusBoard already uses. Classes with no students enrolled are
-// left out entirely: there's no percentage to report for an empty roster.
+// AttendanceStatusBoard already uses. Away students (Student.awayReason)
+// count against the rate like an absence would, but stay out of
+// absentCount/the "Absent" label — resolveAbsenceReason's warden/LAI-first
+// precedence means a student already in the absentee set is never also
+// counted as away here. Classes with no students enrolled are left out
+// entirely: there's no percentage to report for an empty roster.
 function classAttendanceForDate(state, classesInScope, day) {
   return classesInScope
     .map((c) => {
       const r = day[c.id] || emptyRecord();
-      const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
+      const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+      const absentCount = absentIds.size;
       const roster = state.students.filter((s) => s.classId === c.id).length;
       if (roster === 0) return null;
-      const pct = ((roster - absentCount) / roster) * 100;
-      return { c, r, absentCount, roster, pct, bucket: attendanceBucket(pct) };
+      const awayCount = state.students.filter((s) => s.classId === c.id && s.awayReason && !absentIds.has(s.id)).length;
+      const presentCount = roster - absentCount - awayCount;
+      const pct = (presentCount / roster) * 100;
+      return { c, r, absentCount, awayCount, presentCount, roster, pct, bucket: attendanceBucket(pct) };
     })
     .filter(Boolean);
 }
@@ -1051,15 +1058,15 @@ function SegmentedAttendanceBar({ rows }) {
 // AttendanceStatusBoard below, which stays in place for the Lecturer's "status"
 // tab (a different, floor-scoped, table-based view).
 // Institution-wide % across a set of already-computed per-class rows
-// (classAttendanceForDate's output) — sum absentCount and roster across
+// (classAttendanceForDate's output) — sum presentCount and roster across
 // every class, rather than averaging each class's own %, so a large class
 // influences the headline number more than a small one.
 function aggregatePct(rows) {
   if (rows.length === 0) return null;
   const totalRoster = rows.reduce((n, r) => n + r.roster, 0);
-  const totalAbsent = rows.reduce((n, r) => n + r.absentCount, 0);
+  const totalPresent = rows.reduce((n, r) => n + r.presentCount, 0);
   if (totalRoster === 0) return null;
-  return ((totalRoster - totalAbsent) / totalRoster) * 100;
+  return (totalPresent / totalRoster) * 100;
 }
 
 // Same aggregation, but for a comparison day (yesterday) fetched separately
@@ -1071,19 +1078,21 @@ function aggregatePct(rows) {
 // specifically for a backing comparison day nobody is actively working on
 // — if nothing was marked, there's nothing to compare against, not a 100%.
 function aggregatePctFromRecordedOnly(state, classesInScope, day) {
-  let totalRoster = 0, totalAbsent = 0, classesCounted = 0;
+  let totalRoster = 0, totalPresent = 0, classesCounted = 0;
   for (const c of classesInScope) {
     const r = day[c.id];
     if (!r) continue;
     const roster = state.students.filter((s) => s.classId === c.id).length;
     if (roster === 0) continue;
-    const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
+    const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+    const awayCount = state.students.filter((s) => s.classId === c.id && s.awayReason && !absentIds.has(s.id)).length;
+    const presentCount = roster - absentIds.size - awayCount;
     totalRoster += roster;
-    totalAbsent += absentCount;
+    totalPresent += presentCount;
     classesCounted++;
   }
   if (classesCounted === 0 || totalRoster === 0) return null;
-  return ((totalRoster - totalAbsent) / totalRoster) * 100;
+  return (totalPresent / totalRoster) * 100;
 }
 
 // Large numeral + trend arrow. `delta` is in percentage points (today's %
@@ -1442,7 +1451,7 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
               <EmptyNote text="No students enrolled in this class." />
             ) : (
               <div className="grid grid-cols-3 gap-3">
-                <Stat label="Present" value={row.roster - row.absentCount} tone="emerald" />
+                <Stat label="Present" value={row.presentCount} tone="emerald" />
                 <Stat label="Absent" value={row.absentCount} tone="rose" />
                 <Stat label="Rate" value={`${Math.round(row.pct)}%`} tone={row.bucket} />
               </div>
