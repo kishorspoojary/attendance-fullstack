@@ -1,11 +1,15 @@
 # Attendance & Hostel Management System
 
 A full-stack app for the workflow: Principal registers and sets up
-leadership → DB Manager proposes changes → AO approves → daily attendance
-flows Warden/LAI → DO → Lecturer → Coordinator → Principal's
+leadership → DB Manager proposes changes → AO approves → attendance is
+taken twice a day (a separate morning and afternoon session per class) and
+flows Warden/LAI → DO → Lecturer → published straight to the Principal's
 report, with pooled DO/Lecturer coverage per floor, send-back for
-corrections, and a deadline cutoff that auto-publishes unfinished lists
-with a tag (never bypassing the DO's verification step).
+corrections, and a deadline cutoff — Coordinator's institution-wide one, or
+a Lecturer's own per-floor one — that auto-publishes unfinished lists with
+a tag, never bypassing the DO's verification step. Coordinator is an
+institution-wide observer of the DO/Lecturer chain now, not an approval
+stage in it.
 
 ```
 attendance-fullstack/
@@ -146,18 +150,35 @@ how it got here (see `git log` if you want that history).
   Floor → Room (Wardens attach to rooms) and College Floor → Class/Batch
   (DOs and Lecturers attach to floors, pooled). They're unrelated
   hierarchies even though people call both "floor" out loud.
-- **The daily chain is three stages, not four:** DO → Lecturer →
-  Coordinator → published straight to the Principal. AO does not approve
-  daily attendance at all — only master-data changes, new staff accounts,
-  and freezing/unfreezing accounts.
-- **Send-back**: instead of approving, a DO/Teacher/Coordinator can bounce
-  a class's record back exactly one stage with a required reason. Whoever
+- **Attendance is taken twice a day** — a morning and an afternoon session
+  for every class, each running the full DO → Lecturer pipeline
+  independently. A student can be absent in one session and present in the
+  other; nothing carries over between them automatically, except an
+  already-verified reason a DO can choose to reuse instead of calling home
+  twice (see below).
+- **The daily chain is two stages, not three:** DO → Lecturer → published
+  straight to the Principal's report, per session. Neither AO nor
+  Coordinator approve daily attendance — AO only handles master-data
+  changes, new staff accounts, and freezing/unfreezing accounts; Coordinator
+  is an institution-wide observer of the chain (see below), not part of it.
+- **Send-back**: instead of approving, a DO or Lecturer can bounce a
+  class's record back exactly one stage with a required reason. Whoever
   receives it can fix and re-approve, push it back further themselves, or
-  just re-confirm unchanged.
-- **The deadline cutoff** (moved to Coordinator's screen) can force-publish
-  anything stuck at Teacher or Coordinator, tagged "auto-passed" — but
-  never bypasses the DO stage, since that's where real verification (phone
-  calls, headcounts) happens.
+  just re-confirm unchanged. Coordinator can't send back either — read-only.
+- **The deadline cutoff** can force-publish anything not yet approved,
+  tagged "auto-passed" — but never bypasses the DO stage, since that's
+  where real verification (phone calls, headcounts) happens. Coordinator
+  has an institution-wide one on their own screen; any Lecturer can also
+  set an optional per-floor deadline, which unlocks the same force-publish
+  action scoped to just their own floor once it passes.
+- **Coordinator and Lecturer both have an "Attendance status" tab** — a
+  live per-classroom, per-session board (not started, in progress, awaiting
+  DO, awaiting Lecturer, published, or auto-passed). Coordinator's is
+  institution-wide; Lecturer's is scoped to their own floor and adds a 3+
+  day long-leave watch, tighter than the Principal's institution-wide 5+
+  day one. Once a class is Lecturer-approved, a different Lecturer on the
+  same floor can optionally co-sign it — a second set of eyes, never
+  required, never gating anything.
 - **Absence reasons and the persistent "away" status**: a Warden must pick
   a reason when marking someone absent. Picking "Went home" doesn't touch
   today's record at all — it flags the student as away, counting them
@@ -169,15 +190,22 @@ how it got here (see `git log` if you want that history).
   Warden/LAI screens filter their (potentially long) lists client-side.
 - **The Database Manager has a read-only Absentees view** — pick a date,
   see roll number/name/class for everyone absent, nothing else.
+- **Principal and Coordinator have a classwise absentee report** — pick a
+  date range and a session, see each class's absence tally and present-%
+  over that range, grouped and collapsible the same way the Database
+  Manager's single-day Absentees view is.
 - **Excel template, bulk import, and export** on the Students screen — the
   template includes a reference sheet listing the exact class and room
   names already in the system, since import matches rows to them by name.
   A bulk upload becomes one PendingChange for the AO either way, same as
   every other Database Manager action.
-- **DO's own verification now happens in two separate windows**, matching
-  when a DO can actually act: a quick classroom check (confirm who's really
+- **DO's own verification happens in two separate windows**, matching when
+  a DO can actually act: a quick classroom check (confirm who's really
   absent, no calls needed) now, and a phone-call round to record the actual
-  reason later. Approval needs both, tracked independently.
+  reason later. Approval needs both, tracked independently, per session. If
+  a student was already absent and verified in the morning and is still
+  absent in the afternoon, the DO doesn't need to call again — the
+  morning's verified reason carries forward automatically.
 - **Students carry an explicit "local" tag** (day scholar vs. hosteller)
   instead of inferring it from whether a room is assigned. The LAI's list
   now correctly excludes hostellers in their class, who are the Warden's
