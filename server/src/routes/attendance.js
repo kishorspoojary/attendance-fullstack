@@ -378,9 +378,10 @@ attendanceRouter.post(
 // --------------------------------------------------------------------------
 // Optional cross-verification — a second Lecturer on the same floor
 // voluntarily co-signing a class teacherApproved already covers. Never
-// required and never gates anything downstream (Coordinator doesn't wait
-// on this, the class is already fully approved without it) — purely a
-// visible extra set of eyes for classes someone wants a second review on.
+// required and never gates anything downstream — the class is already
+// fully published once teacherApproved is set, nothing else in the
+// pipeline waits on this — purely a visible extra set of eyes for classes
+// someone wants a second review on.
 // Requires teacherApproved to already be set, and the co-signer to be
 // someone OTHER than whoever set it — co-signing your own approval is
 // meaningless. Uses setJsonFieldIfNull for the same reason /approve does

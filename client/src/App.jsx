@@ -1226,7 +1226,7 @@ const FEED_TONE_CLASS = {
 };
 
 // Combines three attendance-only sources into one flat "needs attention"
-// feed — no approval-pipeline items (pending Coordinator sign-off, etc.),
+// feed — no approval-pipeline items (pending Lecturer approval, etc.),
 // per the decision that this view stays attendance-only. Away-student
 // alerts only fire once someone's been away 5+ days (the same long-leave
 // tier as the absence-streak alerts), so a one-day home visit doesn't
@@ -1653,7 +1653,7 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Published straight to you once Coordinator approves — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`)} />
+        <SectionTitle icon={LayoutDashboard} title={title || "Daily attendance report"} subtitle={subtitle || (isToday ? `Published straight to you once a Lecturer approves — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`)} />
         <div className="flex flex-wrap items-end gap-2">
           <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
         </div>
@@ -1694,7 +1694,7 @@ function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
                 <td colSpan={3} className="px-4 py-10 text-center text-slate-400">
                   <CalendarSearch className="mx-auto mb-2" size={28} />
                   <div>No classes in this scope yet.</div>
-                  <div className="mt-1 text-xs">Try a different date, or check back after the Coordinator publishes.</div>
+                  <div className="mt-1 text-xs">Try a different date, or check back after a Lecturer publishes it.</div>
                 </td>
               </tr>
             )}
@@ -2781,12 +2781,17 @@ function ViewStudents({ me }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* 5c. Shared approval queue (Lecturer and Coordinator)       */
+/* 5c. Lecturer's approval queue                                      */
 /* ---------------------------------------------------------------- */
+// Coordinator used to share this component (stageKey="coordinatorApproved")
+// before the redesign that made them an institution-wide observer only —
+// see CoordinatorObserverView instead, a separate read-only component built
+// for that. This one is Lecturer-only now, but scopeFloorIds stays a real
+// prop rather than being hardcoded away, since nothing about approving
+// one's own floor's classes was Coordinator-specific to begin with.
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note, scopeFloorIds, me }) {
   const day = sessionScoped(state.attendance[date]);
-  // Coordinator sees the whole institution (scopeFloorIds omitted); Lecturer
-  // only their own assigned floor(s) — same scoping pattern as
+  // Scoped to the caller's own assigned floor(s) — same scoping pattern as
   // PrincipalDashboard's "status" tab, which this queue sits right next to.
   const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
   const withRecord = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
@@ -2961,7 +2966,7 @@ function CoordinatorApprovals({ state, date, runAction }) {
           <Bell size={15} className="mt-0.5 shrink-0" />
           <div>
             <p className="font-medium">Deadline cutoff</p>
-            <p className="mt-0.5 text-amber-700">Anything still waiting on a Teacher or your own approval past the cutoff gets published anyway, tagged "auto-passed." A list still stuck on the DO is never auto-passed — that verification has to actually happen.</p>
+            <p className="mt-0.5 text-amber-700">Anything still waiting on a Teacher approval past the cutoff gets published anyway, tagged "auto-passed." A list still stuck on the DO is never auto-passed — that verification has to actually happen.</p>
           </div>
         </div>
         <div className="mt-3"><Btn variant="outline" onClick={() => runAction(() => api.runCutoff(date), "Cutoff run")}><Clock size={14} /> Run cutoff now (demo)</Btn></div>
@@ -2981,10 +2986,10 @@ function nowHHMM() {
 
 // One floor's optional deadline: set/clear it, and once it's passed, a
 // button to force-publish anything on this floor still waiting on a
-// Teacher or Coordinator approval — this app has no scheduler, so the
-// deadline never fires anything by itself, it only unlocks this button for
-// a human to click. Never bypasses the DO stage, same rule as Coordinator's
-// institution-wide cutoff below in CoordinatorApprovals.
+// Teacher approval — this app has no scheduler, so the deadline never
+// fires anything by itself, it only unlocks this button for a human to
+// click. Never bypasses the DO stage, same rule as Coordinator's
+// institution-wide cutoff in CoordinatorApprovals.
 function FloorDeadlineCard({ floor, date, runAction }) {
   const [time, setTime] = useState(floor.dailyDeadline || "");
   const passed = !!floor.dailyDeadline && nowHHMM() >= floor.dailyDeadline;
@@ -2994,7 +2999,7 @@ function FloorDeadlineCard({ floor, date, runAction }) {
         <Bell size={15} className="mt-0.5 shrink-0" />
         <div className="flex-1">
           <p className="font-medium">{floor.name} — deadline</p>
-          <p className="mt-0.5 text-amber-700">Optional. Once it passes, you can force-publish anything on this floor still waiting on a Teacher or Coordinator approval — never bypasses the DO stage.</p>
+          <p className="mt-0.5 text-amber-700">Optional. Once it passes, you can force-publish anything on this floor still waiting on a Teacher approval — never bypasses the DO stage.</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input type="time" className={`${inputCls} w-32`} value={time} onChange={(e) => setTime(e.target.value)} />
             <Btn size="sm" variant="outline" onClick={() => runAction(() => api.setFloorDeadline(floor.id, time || null), time ? "Deadline set" : "Deadline cleared")}>Save</Btn>
