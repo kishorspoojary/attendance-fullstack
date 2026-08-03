@@ -53,25 +53,37 @@ async function getOrCreateRecord(date, classId, session) {
   return prisma.attendanceRecord.create({ data: { date, classId, session } });
 }
 
-// Sets a nullable Json field on an AttendanceRecord only if it's still
-// null, closing the read-check-write race that a plain
-// `if (record[field]) return 409; else update(...)` leaves open: two
-// concurrent requests can both read null before either write lands, both
-// pass the check, and the second `update()` would silently overwrite the
-// first instead of failing. This uses `updateMany` with the null check
-// INSIDE the `where` clause instead — the database evaluates it atomically
-// per writer, so a losing concurrent writer's query simply matches 0 rows.
-// Plain `null` in a Json field's `where` filter throws in this Prisma
-// version (confirmed against the real DB before wiring this in) — Json
-// columns need Prisma.DbNull to mean "SQL NULL" specifically. Returns the
-// updated record, or null if someone else won the race.
-async function setJsonFieldIfNull(recordId, field, value) {
+// Runs an update only if `guardField` is still null, closing the
+// read-check-write race that a plain `if (record[guardField]) return 409;
+// else update(...)` leaves open: two concurrent requests can both read
+// null before either write lands, both pass the check, and the second
+// `update()` would silently overwrite the first instead of failing. This
+// uses `updateMany` with the null check INSIDE the `where` clause instead —
+// the database evaluates it atomically per writer, so a losing concurrent
+// writer's query simply matches 0 rows. Plain `null` in a Json field's
+// `where` filter throws in this Prisma version (confirmed against the real
+// DB before wiring this in) — Json columns need Prisma.DbNull to mean "SQL
+// NULL" specifically. `guardField` and the fields actually written don't
+// have to be the same one — /send-back guards on its own stageKey (can't
+// send back after approving) while writing sentBack and nulling the prior
+// stage instead. Returns the updated record, or null if someone else won
+// the race.
+async function updateIfFieldNull(recordId, guardField, data) {
   const result = await prisma.attendanceRecord.updateMany({
-    where: { id: recordId, [field]: { equals: Prisma.DbNull } },
-    data: { [field]: value },
+    where: { id: recordId, [guardField]: { equals: Prisma.DbNull } },
+    data,
   });
   if (result.count === 0) return null;
   return prisma.attendanceRecord.findUnique({ where: { id: recordId } });
+}
+
+// The common case: the guarded field and the field being set to a real
+// value are the same one (co-sign, and every *Approved stage). `extraData`
+// rides along in the same write (e.g. /approve also clears skippedStages
+// and sentBack) — it isn't part of the race guard itself, just fields that
+// need to land atomically with it.
+async function setJsonFieldIfNull(recordId, field, value, extraData = {}) {
+  return updateIfFieldNull(recordId, field, { [field]: value, ...extraData });
 }
 
 const nowTs = () => new Date().toISOString();
@@ -309,6 +321,12 @@ attendanceRouter.post(
     }
 
     const record = await getOrCreateRecord(date, classId, session);
+    // Fast path: reject the common sequential case (someone already
+    // approved, no race involved) before spending time on the validation
+    // checks below. This alone isn't the race fix — see the atomic write
+    // at the bottom, which is what actually closes the window between two
+    // near-simultaneous requests (e.g. two Lecturers pooled on the same
+    // floor) both reading a null stageKey here before either write lands.
     if (record[stageKey]) return res.status(409).json({ error: "You've already approved this" });
 
     const priorKey = priorStageKey(stageKey);
@@ -333,13 +351,20 @@ attendanceRouter.post(
 
     const skipped = (record.skippedStages || []).filter((k) => k !== stageKey);
 
-    const updated = await prisma.attendanceRecord.update({
-      where: { id: record.id },
+    // The actual race guard: atomically set stageKey only if it's still
+    // null. If a concurrent request (same class/session/stage) won the
+    // race between our read above and this write, `updated` comes back
+    // null instead of silently overwriting their approval with ours.
+    const updated = await setJsonFieldIfNull(
+      record.id,
+      stageKey,
+      { by: req.user.id, byName: req.user.name, at: nowTs() },
       // Approving clears any lingering "sent back" note — this stage is
       // resolved now, whether it was a first-time approval or a re-approval
       // after fixing whatever the send-back flagged.
-      data: { [stageKey]: { by: req.user.id, byName: req.user.name, at: nowTs() }, skippedStages: skipped, sentBack: null },
-    });
+      { skippedStages: skipped, sentBack: null },
+    );
+    if (!updated) return res.status(409).json({ error: "You've already approved this" });
     res.json({ record: updated });
   }
 );
@@ -407,6 +432,8 @@ attendanceRouter.post(
     }
 
     const record = await getOrCreateRecord(date, classId, session);
+    // Fast path \u2014 see /approve's comment on why this alone isn't the race
+    // fix; the atomic guard below is.
     if (record[stageKey]) return res.status(409).json({ error: "You've already approved this \u2014 too late to send back" });
 
     const priorKey = priorStageKey(stageKey);
@@ -416,7 +443,13 @@ attendanceRouter.post(
     const data = { sentBack };
     if (priorKey) data[priorKey] = null; // re-opens that stage; also re-opens everything before it, since their lock checks read this same field
 
-    const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data });
+    // Same class of race as /approve, lower stakes: two people eligible to
+    // send back the same stage racing each other wouldn't corrupt pipeline
+    // state either way (the record ends up sent back regardless), but
+    // without this guard the losing writer's sentBack reason would be
+    // silently discarded rather than the winner's, rather than rejected.
+    const updated = await updateIfFieldNull(record.id, stageKey, data);
+    if (!updated) return res.status(409).json({ error: "You've already approved this \u2014 too late to send back" });
     res.json({ record: updated });
   }
 );
