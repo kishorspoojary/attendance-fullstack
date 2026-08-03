@@ -67,7 +67,7 @@ function priorStageKey(stageKey) {
   return idx > 0 ? STAGES[idx - 1].key : null;
 }
 // Per-classroom-per-session status for the floor status board (Coordinator's
-// and Lecturer's "status" tab, PrincipalDashboard below). Finer-grained than
+// and Lecturer's "status" tab, AttendanceStatusBoard below). Finer-grained than
 // a plain stage index: idx===0 alone spans everything from "nobody's
 // touched this yet" to "DO has everything they need and just hasn't clicked
 // approve," which is too coarse for a board someone checks throughout the
@@ -945,7 +945,7 @@ export default function App() {
               {activeTab === "staffdirectory" && <StaffDirectory />}
               {activeTab === "viewstudents" && <ViewStudents me={me} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
-              {activeTab === "status" && <PrincipalDashboard state={state} date={date} scopeFloorIds={me.role === "LECTURER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
+              {activeTab === "status" && <AttendanceStatusBoard state={state} date={date} scopeFloorIds={me.role === "LECTURER" ? me.floorIds : null} title="Attendance status" subtitle="Visible any time — not just when something is waiting on you." />}
               {activeTab === "students" && <StudentsAdmin state={state} runAction={runAction} />}
               {activeTab === "structure" && <StructureAdmin state={state} runAction={runAction} editBatch={editBatch} onDoneEditing={() => setEditBatch(null)} />}
               {activeTab === "assign" && <AssignAdmin state={state} runAction={runAction} />}
@@ -1005,7 +1005,7 @@ const BUCKET_DOT_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", ros
 
 // Per-class attendance % for one date — 1 - absentCount/roster, reusing the
 // same "union of wardenAbsences/laiAbsences keys" absentee count
-// PrincipalDashboard already uses. Classes with no students enrolled are
+// AttendanceStatusBoard already uses. Classes with no students enrolled are
 // left out entirely: there's no percentage to report for an empty roster.
 function classAttendanceForDate(state, classesInScope, day) {
   return classesInScope
@@ -1048,7 +1048,7 @@ function SegmentedAttendanceBar({ rows }) {
 // The Principal's home view — a mobile-first "hero" dashboard (institution
 // attendance %, trend, segmented class breakdown, and a "needs attention"
 // feed), built up over several steps. Deliberately a separate component from
-// PrincipalDashboard below, which stays in place for the Lecturer's "status"
+// AttendanceStatusBoard below, which stays in place for the Lecturer's "status"
 // tab (a different, floor-scoped, table-based view).
 // Institution-wide % across a set of already-computed per-class rows
 // (classAttendanceForDate's output) — sum absentCount and roster across
@@ -1615,7 +1615,7 @@ function PrincipalHeroDashboard({ state, date }) {
   );
 }
 
-function PrincipalDashboard({ state, date, scopeFloorIds, title, subtitle }) {
+function AttendanceStatusBoard({ state, date, scopeFloorIds, title, subtitle }) {
   const [viewDate, setViewDate] = useState(date);
   const [session, setSession] = useState(DEFAULT_SESSION);
   const day = sessionScoped(state.attendance[viewDate], session);
@@ -2792,7 +2792,7 @@ function ViewStudents({ me }) {
 function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, roleLabel, note, scopeFloorIds, me }) {
   const day = sessionScoped(state.attendance[date]);
   // Scoped to the caller's own assigned floor(s) — same scoping pattern as
-  // PrincipalDashboard's "status" tab, which this queue sits right next to.
+  // AttendanceStatusBoard's "status" tab, which this queue sits right next to.
   const classesInScope = scopeFloorIds ? state.classes.filter((c) => scopeFloorIds.includes(c.collegeFloorId)) : state.classes;
   const withRecord = classesInScope.map((c) => ({ c, r: day[c.id] || emptyRecord() }));
   const items = withRecord.filter(({ r }) => (requiredPriorKey ? !!r[requiredPriorKey] : true) && !r[stageKey]);
