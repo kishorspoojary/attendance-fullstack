@@ -2289,7 +2289,7 @@ function AOFreezeAccounts({ state, runAction, me }) {
       <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
+            <tr><th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Role</th><th className="px-4 py-2.5">Key</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5"></th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {staff.map((s) => {
@@ -2301,6 +2301,7 @@ function AOFreezeAccounts({ state, runAction, me }) {
                 <tr key={s.id}>
                   <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                   <td className="px-4 py-2.5 text-slate-600">{ROLE_LABELS[s.role]}</td>
+                  <td className="px-4 py-2.5 text-slate-600 font-display">{s.loginKey}</td>
                   <td className="px-4 py-2.5"><Badge tone={s.status === "ACTIVE" ? "emerald" : s.status === "FROZEN" ? "rose" : "amber"}>{s.status}</Badge></td>
                   <td className="px-4 py-2.5">
                     <AccountActions
