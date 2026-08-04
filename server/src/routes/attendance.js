@@ -450,8 +450,12 @@ attendanceRouter.post(
       { by: req.user.id, byName: req.user.name, at: nowTs() },
       // Approving clears any lingering "sent back" note — this stage is
       // resolved now, whether it was a first-time approval or a re-approval
-      // after fixing whatever the send-back flagged.
-      { skippedStages: skipped, sentBack: null },
+      // after fixing whatever the send-back flagged. Prisma.DbNull, not
+      // plain null — see updateIfFieldNull's comment above for why a Json?
+      // column needs it explicitly (plain null would store the JSON null
+      // literal instead of SQL NULL, silently breaking any future
+      // Prisma.DbNull-guarded read against this column).
+      { skippedStages: skipped, sentBack: Prisma.DbNull },
     );
     if (!updated) return res.status(409).json({ error: "You've already approved this" });
     res.json({ record: updated });
@@ -532,7 +536,17 @@ attendanceRouter.post(
     const sentBack = { fromStage: stageKey, fromName: req.user.name, toStage: priorKey || "warden_lai", toLabel, reason, at: nowTs() };
 
     const data = { sentBack };
-    if (priorKey) data[priorKey] = null; // re-opens that stage; also re-opens everything before it, since their lock checks read this same field
+    // Prisma.DbNull, not plain null — for a Json? column, `data: { x: null }`
+    // stores the JSON null literal, not SQL NULL (confirmed against the real
+    // DB: is_sql_null: false, raw_text: 'null'). Every subsequent
+    // updateIfFieldNull/setJsonFieldIfNull call guards on `{ equals:
+    // Prisma.DbNull }` (true SQL NULL) — a column holding the JSON null
+    // literal instead never matches that filter, so /approve would
+    // permanently 409 ("You've already approved this") on this record from
+    // here on, even though every plain read of the field correctly shows
+    // null. Re-opens the prior stage; also re-opens everything before it,
+    // since their lock checks read this same field.
+    if (priorKey) data[priorKey] = Prisma.DbNull;
 
     // Same class of race as /approve, lower stakes: two people eligible to
     // send back the same stage racing each other wouldn't corrupt pipeline
