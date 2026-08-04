@@ -4702,7 +4702,7 @@ function WardenScreen({ state, date, me, runAction }) {
 
   return (
     <div>
-      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${rooms.length} room(s) today — picking a reason marks a student absent.`} />
+      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${myRoomIds.size} room(s) today — picking a reason marks a student absent.`} />
 
       {away.length > 0 && (
         <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
