@@ -1003,24 +1003,27 @@ const BUCKET_RANGE_LABEL = { emerald: "≥90%", amber: "75-89%", rose: "<75%" };
 const BUCKET_BAR_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
 const BUCKET_DOT_CLASS = { emerald: "bg-emerald-500", amber: "bg-amber-400", rose: "bg-rose-500" };
 
-// Per-class attendance % for one date — presentCount/roster, reusing the
-// same "union of wardenAbsences/laiAbsences keys" absentee count
-// AttendanceStatusBoard already uses. Away students (Student.awayReason)
-// count against the rate like an absence would, but stay out of
-// absentCount/the "Absent" label — resolveAbsenceReason's warden/LAI-first
-// precedence means a student already in the absentee set is never also
-// counted as away here. Classes with no students enrolled are left out
-// entirely: there's no percentage to report for an empty roster.
+// Per-class attendance % for one date — presentCount/roster. Away
+// (Student.awayReason) is a reason for absence, the same tier as any
+// warden/LAI-given daily reason: it's folded into absentCount (and so into
+// the "Absent" label downstream), not tracked as a separate status here.
+// resolveAbsenceReason's warden/LAI-first precedence means a student
+// already in the absentee set is never also double-counted as away.
+// awayCount is still returned in case anything downstream needs the
+// breakdown, even though it no longer affects absentCount/presentCount/pct
+// differently than folding it in directly would. Classes with no students
+// enrolled are left out entirely: there's no percentage to report for an
+// empty roster.
 function classAttendanceForDate(state, classesInScope, day) {
   return classesInScope
     .map((c) => {
       const r = day[c.id] || emptyRecord();
       const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
-      const absentCount = absentIds.size;
       const roster = state.students.filter((s) => s.classId === c.id).length;
       if (roster === 0) return null;
       const awayCount = state.students.filter((s) => s.classId === c.id && s.awayReason && !absentIds.has(s.id)).length;
-      const presentCount = roster - absentCount - awayCount;
+      const absentCount = absentIds.size + awayCount;
+      const presentCount = roster - absentCount;
       const pct = (presentCount / roster) * 100;
       return { c, r, absentCount, awayCount, presentCount, roster, pct, bucket: attendanceBucket(pct) };
     })
@@ -1358,12 +1361,26 @@ const STUDENT_HISTORY_DAYS = 7;
 // unfiltered history (see GET /state) — no fetch needed. Scoped to
 // DEFAULT_SESSION (MORNING) — see that constant's comment; a day with only
 // an afternoon record shows as "none" here for now.
+// A currently-away student (Student.awayReason/awaySince) forces "absent"
+// for every day from awaySince through today, regardless of what the
+// record shows — away students are structurally excluded from daily
+// marking, so the record alone can't tell you they were absent (see
+// resolveAbsenceReason). awaySince is a plain "YYYY-MM-DD" string, same
+// format as `date` here, so a lexicographic >= comparison is safe. This
+// only covers the *current* away spell — awayReason/awaySince are cleared
+// on return, so an earlier spell that's already ended isn't reconstructable
+// and those days fall through to the record-based logic below.
 function studentDayHistory(state, student, viewDate) {
   const days = [];
   for (let i = STUDENT_HISTORY_DAYS - 1; i >= 0; i--) {
     const date = shiftDateStr(viewDate, -i);
-    const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
-    const status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id]) ? "absent" : "present";
+    let status;
+    if (student.awayReason && date >= student.awaySince) {
+      status = "absent";
+    } else {
+      const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
+      status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id]) ? "absent" : "present";
+    }
     days.push({ date, status });
   }
   return days;
@@ -1375,6 +1392,11 @@ function studentDayHistory(state, student, viewDate) {
 // class are excluded from the denominator entirely, not counted as present
 // or absent — per the same design decision as the streak scan. Scoped to
 // DEFAULT_SESSION (MORNING), same phase-1 simplification as studentDayHistory.
+// Same awaySince check as studentDayHistory: for any date that has a
+// record, a currently-away student (date >= awaySince) counts as not
+// present, on top of the existing wardenAbsences/laiAbsences check —
+// the denominator (withRecord) is unaffected, only whether the day counts
+// toward `present`.
 function studentAllTimeStats(state, student, viewDate) {
   let present = 0, withRecord = 0;
   for (const date of Object.keys(state.attendance)) {
@@ -1382,7 +1404,8 @@ function studentAllTimeStats(state, student, viewDate) {
     const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
     if (!record) continue;
     withRecord++;
-    if (!(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id])) present++;
+    const isAway = student.awayReason && date >= student.awaySince;
+    if (!isAway && !(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id])) present++;
   }
   return { present, withRecord, pct: withRecord > 0 ? (present / withRecord) * 100 : null };
 }
@@ -1399,13 +1422,15 @@ const HISTORY_SQUARE_CLASS = { present: "bg-emerald-500", absent: "bg-rose-500",
 // it.
 //
 // "Absent" here means the same thing it means for the segmented bar:
-// a wardenAbsences/laiAbsences entry for that date. An actively "away"
-// student has neither (see computeAbsenceStreaks' comment on why), so
-// they're shown in the roster with their own "Away" status rather than
-// folded into "Absent" — keeping this screen's summary numbers consistent
-// with the dashboard's segmented bar instead of introducing a second,
-// slightly different definition of "absent" that would make the two
-// disagree on the same class.
+// a wardenAbsences/laiAbsences entry for that date, OR an actively "away"
+// student (Student.awayReason) — away is a reason for absence, the same
+// tier as any warden/LAI-given daily reason, not a separate status. An
+// away student renders with the same rose "Absent" badge as any other
+// absence, with their reason (e.g. "Went home") shown underneath exactly
+// like a warden-given reason would be — keeping this screen's summary
+// numbers consistent with the dashboard's segmented bar instead of
+// introducing a second, slightly different definition of "absent" that
+// would make the two disagree on the same class.
 function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
   const cls = state.classes.find((c) => c.id === classId);
   const day = sessionScoped(state.attendance[viewDate]);
@@ -1456,9 +1481,6 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
                 <Stat label="Rate" value={`${Math.round(row.pct)}%`} tone={row.bucket} />
               </div>
             )}
-            {roster.some((r) => r.isAway) && (
-              <p className="mt-3 text-xs text-slate-400">Away students appear in the roster below with their own status, but aren't counted in "Absent" above — that count matches the segmented bar on the dashboard.</p>
-            )}
           </Card>
 
           <Card className="p-5">
@@ -1490,7 +1512,7 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
                     })
                   : roster
                 ).map(({ student, isAbsent, isAway, reason }) => {
-                  const status = isAway ? { label: "Away", tone: "blue" } : isAbsent ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
+                  const status = isAbsent || isAway ? { label: "Absent", tone: "rose" } : { label: "Present", tone: "emerald" };
                   const matches = !!rq && (student.name.toLowerCase().includes(rq) || student.roll.toLowerCase().includes(rq));
                   const faded = !!rq && !matches;
                   const expanded = expandedStudentId === student.id;
@@ -1523,7 +1545,7 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
                             <span className="ml-1 text-[10px] text-slate-400">last {STUDENT_HISTORY_DAYS} days</span>
                           </div>
                           <p className="mt-1.5 text-xs text-slate-500">
-                            {allTime.withRecord > 0 ? `${Math.round(allTime.pct)}% all-time (${allTime.present}/${allTime.withRecord} days with a record)` : "No attendance history yet"}
+                            {allTime.withRecord > 0 ? `${Math.round(allTime.pct)}% attendance (${allTime.present}/${allTime.withRecord} days)` : "No attendance history yet"}
                           </p>
                         </div>
                       )}
