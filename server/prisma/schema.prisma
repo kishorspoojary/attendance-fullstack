@@ -111,6 +111,8 @@ model HostelFloor {
   hostelId String
   hostel   Hostel       @relation(fields: [hostelId], references: [id])
   rooms    HostelRoom[]
+
+  wardenFinalizations WardenFinalization[]
 }
 
 model HostelRoom {
@@ -294,4 +296,32 @@ model AttendanceRecord {
   sentBack Json?
 
   @@unique([date, classId, session])
+}
+
+// A Warden's explicit "I'm done reviewing my floor" signal — one row per
+// (date, hostelFloor, session), not per class. A Warden's floor and a
+// classroom's roster are unrelated groupings (a HostelFloor's residents can
+// span many Classrooms, and a Classroom's hostellers can span many
+// HostelFloors — see schema note atop this file), so finalizing can't be
+// scoped to a single AttendanceRecord the way doApproved/teacherApproved
+// are. Instead, routes/attendance.js's POST .../absence checks this table
+// (by resolving the student's room -> floor) before allowing a Warden to
+// write, and /approve's doApproved branch requires every hostel floor
+// feeding a class to have a row here before that class can be approved —
+// see unfinalizedFloorsForClass in routes/attendance.js.
+model WardenFinalization {
+  id            String      @id @default(cuid())
+  date          String // "YYYY-MM-DD", same convention as AttendanceRecord.date
+  hostelFloorId String
+  hostelFloor   HostelFloor @relation(fields: [hostelFloorId], references: [id])
+  session       Session     @default(MORNING)
+  by            String
+  byName        String
+  at            DateTime    @default(now())
+
+  // The race guard (see updateIfFieldNull's comment in routes/attendance.js
+  // for the same pattern applied to JSON fields) — two Wardens pooled on the
+  // same floor finalizing at once should have the second attempt rejected,
+  // not silently create a duplicate.
+  @@unique([date, hostelFloorId, session])
 }

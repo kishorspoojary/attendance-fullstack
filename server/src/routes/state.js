@@ -13,7 +13,7 @@ import { requireAuth, publicUser } from "../auth.js";
 export const stateRouter = Router();
 
 stateRouter.get("/state", requireAuth, async (req, res) => {
-  const [hostels, hostelFloors, hostelRooms, collegeFloors, classes, students, staff, pendingChanges, attendanceRows] = await Promise.all([
+  const [hostels, hostelFloors, hostelRooms, collegeFloors, classes, students, staff, pendingChanges, attendanceRows, wardenFinalizations] = await Promise.all([
     prisma.hostel.findMany(),
     prisma.hostelFloor.findMany(),
     prisma.hostelRoom.findMany(),
@@ -25,6 +25,7 @@ stateRouter.get("/state", requireAuth, async (req, res) => {
     prisma.user.findMany(),
     prisma.pendingChange.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.attendanceRecord.findMany(),
+    prisma.wardenFinalization.findMany(),
   ]);
 
   // The frontend wants attendance shaped as attendance[date][classId][session],
@@ -46,6 +47,7 @@ stateRouter.get("/state", requireAuth, async (req, res) => {
     staff: staff.map(publicUser), // strip password hashes before this ever reaches the browser
     pendingChanges,
     attendance,
+    wardenFinalizations,
     me: publicUser(req.user),
   });
 });

@@ -31,7 +31,7 @@ import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
 import { STAGES, currentStageIndex, priorStageKey } from "../stages.js";
 import { DAILY_REASONS } from "../constants.js";
-import { isStudentOnWardensFloor } from "../wardenScope.js";
+import { resolveStudentHostelFloorId } from "../wardenScope.js";
 
 export const attendanceRouter = Router();
 
@@ -122,14 +122,29 @@ attendanceRouter.post(
     const student = await prisma.student.findUnique({ where: { id: studentId } });
     if (!student || student.classId !== classId) return res.status(400).json({ error: "That student isn't in this class" });
 
-    if (req.user.role === "WARDEN" && !(await isStudentOnWardensFloor(prisma, req.user, student))) {
-      return res.status(403).json({ error: "This student isn't on one of your assigned hostel floors" });
+    let studentFloorId = null;
+    if (req.user.role === "WARDEN") {
+      studentFloorId = await resolveStudentHostelFloorId(prisma, student);
+      if (!studentFloorId || !(req.user.floorIds || []).includes(studentFloorId)) {
+        return res.status(403).json({ error: "This student isn't on one of your assigned hostel floors" });
+      }
     }
     if (req.user.role === "LAI" && !(req.user.classIds || []).includes(classId)) {
       return res.status(403).json({ error: "This class isn't assigned to you" });
     }
     if (req.user.role === "WARDEN" && reason && !DAILY_REASONS.includes(reason)) {
       return res.status(400).json({ error: `Reason must be one of: ${DAILY_REASONS.join(", ")} (use the "away" action for students who went home)` });
+    }
+
+    // Once a Warden has finalized this floor for this date/session (see
+    // POST .../finalize below), their whole floor is done \u2014 no more edits,
+    // same "locked" spirit as the doApproved check right below, just scoped
+    // to the floor instead of the class.
+    if (req.user.role === "WARDEN") {
+      const finalized = await prisma.wardenFinalization.findUnique({
+        where: { date_hostelFloorId_session: { date, hostelFloorId: studentFloorId, session } },
+      });
+      if (finalized) return res.status(409).json({ error: "You've already finalized this floor's list \u2014 no further changes" });
     }
 
     const record = await getOrCreateRecord(date, classId, session);
@@ -143,6 +158,40 @@ attendanceRouter.post(
 
     const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { [field]: bucket } });
     res.json({ record: updated });
+  }
+);
+
+// --------------------------------------------------------------------------
+// STEP 1B — Warden finalizes their floor's absentee list for a date/session,
+// explicitly sending it forward to the DO stage. Scoped to a hostel floor,
+// not a class — see schema.prisma's WardenFinalization comment for why a
+// per-class lock (like doApproved) doesn't fit here. One-way: there's no
+// un-finalize route, same as the Warden side of the pipeline never having
+// had an "undo" beyond clearing an individual student's reason before this
+// point. Race-guarded by the table's own unique constraint (two Wardens
+// pooled on the same floor finalizing at once — the loser gets a P2002).
+// --------------------------------------------------------------------------
+attendanceRouter.post(
+  "/attendance/:date/:hostelFloorId/:session/finalize",
+  requireAuth,
+  requireRole("WARDEN"),
+  async (req, res) => {
+    const { date, hostelFloorId } = req.params;
+    const session = normalizeSession(req.params.session);
+    if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
+    if (!(req.user.floorIds || []).includes(hostelFloorId)) {
+      return res.status(403).json({ error: "This hostel floor isn't assigned to you" });
+    }
+
+    try {
+      const finalization = await prisma.wardenFinalization.create({
+        data: { date, hostelFloorId, session, by: req.user.id, byName: req.user.name },
+      });
+      res.json({ finalization });
+    } catch (err) {
+      if (err.code === "P2002") return res.status(409).json({ error: "This floor is already finalized for this date/session" });
+      throw err;
+    }
   }
 );
 
@@ -300,6 +349,36 @@ attendanceRouter.post("/attendance/:date/:classId/:session/headcount", requireAu
   res.json({ record: updated });
 });
 
+// A class's hostellers can be spread across several hostel floors (a
+// Classroom's roster and a HostelFloor's residents are unrelated groupings —
+// see schema.prisma's WardenFinalization comment), so doApproved can't fire
+// until every one of those floors has sent its list forward. Floors with
+// zero Wardens assigned are treated as vacuously finalized — same as a class
+// with no hostellers at all — since nobody could ever mark or finalize an
+// absence from an unstaffed floor; otherwise a class fed even partly by one
+// would be permanently stuck (Coordinator's cutoff deliberately never
+// bypasses the DO stage either — see runCutoffForClasses below). Returns
+// the names of floors still pending, or [] if the class is clear to approve.
+async function unfinalizedFloorsForClass(date, session, classId) {
+  const hostellers = await prisma.student.findMany({ where: { classId, roomId: { not: null } } });
+  if (hostellers.length === 0) return [];
+
+  const rooms = await prisma.hostelRoom.findMany({ where: { id: { in: hostellers.map((s) => s.roomId) } } });
+  const floorIds = [...new Set(rooms.map((r) => r.hostelFloorId))];
+
+  const wardens = await prisma.user.findMany({ where: { role: "WARDEN" } });
+  const staffedFloorIds = floorIds.filter((id) => wardens.some((w) => (w.floorIds || []).includes(id)));
+  if (staffedFloorIds.length === 0) return [];
+
+  const finalized = await prisma.wardenFinalization.findMany({ where: { date, session, hostelFloorId: { in: staffedFloorIds } } });
+  const finalizedIds = new Set(finalized.map((f) => f.hostelFloorId));
+  const pendingIds = staffedFloorIds.filter((id) => !finalizedIds.has(id));
+  if (pendingIds.length === 0) return [];
+
+  const floors = await prisma.hostelFloor.findMany({ where: { id: { in: pendingIds } } });
+  return floors.map((f) => f.name);
+}
+
 // Lookup: {"DO": "doApproved", "LECTURER": "teacherApproved"}
 const STAGE_ROLE_TO_KEY = Object.fromEntries(STAGES.map((s) => [s.role, s.key]));
 
@@ -344,6 +423,10 @@ attendanceRouter.post(
       return res.status(400).json({ error: "Enter the headcount before approving" });
     }
     if (stageKey === "doApproved") {
+      const pendingFloors = await unfinalizedFloorsForClass(date, session, classId);
+      if (pendingFloors.length > 0) {
+        return res.status(400).json({ error: `Waiting on Warden finalization from: ${pendingFloors.join(", ")}` });
+      }
       const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
       const unconfirmed = Object.keys(combined).filter((sid) => !record.doConfirmed?.[sid]);
       if (unconfirmed.length > 0) {

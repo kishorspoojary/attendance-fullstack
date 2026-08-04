@@ -4685,100 +4685,189 @@ function MyChanges({ state, me, runAction, onEditBatch }) {
 /* ---------------------------------------------------------------- */
 /* 5e. Warden and LAI                                                  */
 /* ---------------------------------------------------------------- */
+// A floor is finalized for a date/session once its WardenFinalization row
+// exists (see schema.prisma's comment on that model) — always checked
+// against DEFAULT_SESSION here since WardenScreen, like the rest of the
+// Warden-facing flow, doesn't expose a session switcher (see DEFAULT_SESSION's
+// own comment).
+function isHostelFloorFinalized(state, date, hostelFloorId) {
+  return (state.wardenFinalizations || []).some((f) => f.date === date && f.session === DEFAULT_SESSION && f.hostelFloorId === hostelFloorId);
+}
+
 function WardenScreen({ state, date, me, runAction }) {
   // A Warden's students are every hosteller in any room on one of their
   // assigned hostel floors (me.floorIds) — resolved via state.hostelRooms
   // since Student only carries roomId, not the floor it's on.
   const myFloorIds = me.floorIds || [];
-  const myRoomIds = new Set(state.hostelRooms.filter((r) => myFloorIds.includes(r.hostelFloorId)).map((r) => r.id));
+  const myRooms = state.hostelRooms.filter((r) => myFloorIds.includes(r.hostelFloorId));
+  const roomFloorById = new Map(myRooms.map((r) => [r.id, r.hostelFloorId]));
+  const myRoomIds = new Set(myRooms.map((r) => r.id));
   const allStudents = state.students.filter((s) => myRoomIds.has(s.roomId));
   const away = allStudents.filter((s) => s.awayReason);
   const present = allStudents.filter((s) => !s.awayReason);
   const [pickerFor, setPickerFor] = useState(null); // studentId currently choosing a reason
   const [search, setSearch] = useState("");
+  const [view, setView] = useState("mark"); // "mark" | "review"
 
   const q = search.trim().toLowerCase();
   const visiblePresent = !q ? present : present.filter((s) => s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
 
   return (
     <div>
-      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${myRoomIds.size} room(s) today — picking a reason marks a student absent.`} />
+      <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${myRooms.length} room(s) today — picking a reason marks a student absent.`} />
 
-      {away.length > 0 && (
-        <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
-          <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
-          <div className="space-y-2">
-            {away.map((s) => (
-              <div key={s.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
-                <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {s.awayReason} since {formatDMY(s.awaySince)}</span></span>
-                <Btn size="sm" variant="outline" onClick={() => runAction(() => api.reportBack(s.id), "Marked as reported back")}>Mark reported</Btn>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
+      <div className="mb-4 inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+        <button onClick={() => setView("mark")} className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${view === "mark" ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          Mark absentees
+        </button>
+        <button onClick={() => setView("review")} className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${view === "review" ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          Review & finalize
+        </button>
+      </div>
 
-      {allStudents.length === 0 && <EmptyNote text="No students assigned to you yet." />}
-      {allStudents.length > 0 && <SearchBox value={search} onChange={setSearch} placeholder="Search your students by name or roll number..." />}
-
-      <div className="space-y-4">
-        {Object.entries(groupBy(visiblePresent, (s) => s.classId)).map(([classId, list]) => {
-          const cls = state.classes.find((c) => c.id === classId);
-          const r = state.attendance[date]?.[classId]?.[DEFAULT_SESSION] || emptyRecord();
-          const locked = !!r.doApproved;
-          const bucket = r.wardenAbsences || {};
-          const sentBackHere = r.sentBack?.toStage === "warden_lai";
-          return (
-            <Card key={classId} className="p-4">
-              {sentBackHere && <SentBackBanner record={r} />}
-              <div className="mb-2 flex items-center justify-between">
-                <p className="font-medium text-slate-800">{cls?.name}</p>
-                {locked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {list.map((s) => {
-                  const entry = bucket[s.id];
-                  const choosing = pickerFor === s.id;
-                  return (
-                    <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span className="font-medium text-slate-700">{s.name}</span>
-                          <span className="ml-1 text-slate-400">({s.roll})</span>
-                        </div>
-                        {!locked && (
-                          <button onClick={() => setPickerFor(choosing ? null : s.id)} className="text-slate-400 hover:text-slate-700">
-                            <ChevronDown size={13} className={choosing ? "rotate-180" : ""} />
-                          </button>
-                        )}
-                      </div>
-                      {entry ? (
-                        <div className="mt-1 flex items-center justify-between text-rose-700">
-                          <span>Absent — {entry.reason}</span>
-                          {!locked && <button className="text-rose-400 hover:text-rose-700" onClick={() => runAction(() => api.setAbsence(date, classId, s.id, null))}><X size={12} /></button>}
-                        </div>
-                      ) : (
-                        !locked && <div className="mt-1 text-slate-400">Present</div>
-                      )}
-                      {choosing && !locked && (
-                        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
-                          {DAILY_REASONS.map((reason) => (
-                            <button key={reason} onClick={() => { runAction(() => api.setAbsence(date, classId, s.id, reason)); setPickerFor(null); }}
-                              className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">{reason}</button>
-                          ))}
-                          <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away — counted absent until reported back"); setPickerFor(null); }}
-                            className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100">{AWAY_REASON}</button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {list.length === 0 && <p className="text-sm text-slate-400 sm:col-span-2">No students match your search in this class.</p>}
+      {view === "review" ? (
+        <WardenReview state={state} date={date} me={me} runAction={runAction} allStudents={allStudents} />
+      ) : (
+        <>
+          {away.length > 0 && (
+            <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
+              <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
+              <div className="space-y-2">
+                {away.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
+                    <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {s.awayReason} since {formatDMY(s.awaySince)}</span></span>
+                    <Btn size="sm" variant="outline" onClick={() => runAction(() => api.reportBack(s.id), "Marked as reported back")}>Mark reported</Btn>
+                  </div>
+                ))}
               </div>
             </Card>
-          );
-        })}
-      </div>
+          )}
+
+          {allStudents.length === 0 && <EmptyNote text="No students assigned to you yet." />}
+          {allStudents.length > 0 && <SearchBox value={search} onChange={setSearch} placeholder="Search your students by name or roll number..." />}
+
+          <div className="space-y-4">
+            {Object.entries(groupBy(visiblePresent, (s) => s.classId)).map(([classId, list]) => {
+              const cls = state.classes.find((c) => c.id === classId);
+              const r = state.attendance[date]?.[classId]?.[DEFAULT_SESSION] || emptyRecord();
+              const classLocked = !!r.doApproved;
+              const bucket = r.wardenAbsences || {};
+              const sentBackHere = r.sentBack?.toStage === "warden_lai";
+              return (
+                <Card key={classId} className="p-4">
+                  {sentBackHere && <SentBackBanner record={r} />}
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="font-medium text-slate-800">{cls?.name}</p>
+                    {classLocked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {list.map((s) => {
+                      const entry = bucket[s.id];
+                      const choosing = pickerFor === s.id;
+                      // Locked either because the DO's already verified the whole
+                      // class, or because this student's own floor has already
+                      // been finalized by this Warden — the class can still be
+                      // wide open (other floors feeding it may not be finalized
+                      // yet), but this student's entry is done either way.
+                      const locked = classLocked || isHostelFloorFinalized(state, date, roomFloorById.get(s.roomId));
+                      return (
+                        <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-medium text-slate-700">{s.name}</span>
+                              <span className="ml-1 text-slate-400">({s.roll})</span>
+                            </div>
+                            {!locked && (
+                              <button onClick={() => setPickerFor(choosing ? null : s.id)} className="text-slate-400 hover:text-slate-700">
+                                <ChevronDown size={13} className={choosing ? "rotate-180" : ""} />
+                              </button>
+                            )}
+                          </div>
+                          {entry ? (
+                            <div className="mt-1 flex items-center justify-between text-rose-700">
+                              <span>Absent — {entry.reason}</span>
+                              {!locked && <button className="text-rose-400 hover:text-rose-700" onClick={() => runAction(() => api.setAbsence(date, classId, s.id, null))}><X size={12} /></button>}
+                            </div>
+                          ) : (
+                            !locked && <div className="mt-1 text-slate-400">Present</div>
+                          )}
+                          {choosing && !locked && (
+                            <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
+                              {DAILY_REASONS.map((reason) => (
+                                <button key={reason} onClick={() => { runAction(() => api.setAbsence(date, classId, s.id, reason)); setPickerFor(null); }}
+                                  className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">{reason}</button>
+                              ))}
+                              <button onClick={() => { runAction(() => api.markAway(s.id, AWAY_REASON), "Marked away — counted absent until reported back"); setPickerFor(null); }}
+                                className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100">{AWAY_REASON}</button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {list.length === 0 && <p className="text-sm text-slate-400 sm:col-span-2">No students match your search in this class.</p>}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// The review-and-finalize screen: one section per hostel floor the Warden
+// covers (not per class — see schema.prisma's WardenFinalization comment on
+// why finalizing is floor-scoped), listing every current absentee on that
+// floor with their reason, and the explicit "send it forward to the DO
+// stage" action. Only reflects wardenAbsences (this Warden's own daily
+// marks) — persistent "away" students are a separate, already-visible state
+// that isn't part of this daily hand-off (see WardenScreen's away banner).
+function WardenReview({ state, date, me, runAction, allStudents }) {
+  const myFloorIds = me.floorIds || [];
+  return (
+    <div className="space-y-4">
+      {myFloorIds.map((floorId) => {
+        const floor = state.hostelFloors.find((f) => f.id === floorId);
+        const floorRoomIds = new Set(state.hostelRooms.filter((r) => r.hostelFloorId === floorId).map((r) => r.id));
+        const floorStudents = allStudents.filter((s) => floorRoomIds.has(s.roomId));
+        const absentees = floorStudents
+          .map((s) => {
+            const entry = state.attendance[date]?.[s.classId]?.[DEFAULT_SESSION]?.wardenAbsences?.[s.id];
+            return entry ? { student: s, entry, cls: state.classes.find((c) => c.id === s.classId) } : null;
+          })
+          .filter(Boolean);
+        const finalized = isHostelFloorFinalized(state, date, floorId);
+
+        return (
+          <Card key={floorId} className="p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="font-medium text-slate-800">{floor?.name}</p>
+              {finalized ? <Badge tone="emerald"><CheckCircle2 size={12} /> Finalized — sent to DO</Badge> : <Badge tone="amber">Not yet finalized</Badge>}
+            </div>
+            {absentees.length === 0 ? (
+              <p className="text-sm text-slate-400">No absentees marked on this floor yet.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {absentees.map(({ student, entry, cls }) => (
+                  <li key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-sm">
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {cls?.name}</span></span>
+                    <span className="text-rose-700">{entry.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {!finalized && (
+              <div className="mt-3">
+                <Btn size="sm" variant="success" onClick={() => runAction(() => api.finalizeFloor(date, floorId), "Floor finalized and sent to the DO")}>
+                  <CheckCircle2 size={14} /> Finalize this floor's list
+                </Btn>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+      {myFloorIds.length === 0 && <EmptyNote text="No hostel floor assigned to you yet." />}
     </div>
   );
 }
@@ -4835,7 +4924,29 @@ function LAIScreen({ state, date, me, runAction }) {
 /* ---------------------------------------------------------------- */
 /* 5f. Discipline Officer                                              */
 /* ---------------------------------------------------------------- */
-function DoClassCard({ c, record, date, session, students, runAction }) {
+// Client-side mirror of unfinalizedFloorsForClass in routes/attendance.js's
+// /approve route — computed from data already in `state` so the Approve
+// button can show the real reason it's blocked instead of a dead-end server
+// error. The server re-checks this for real regardless; this is UX only.
+// Floors with zero Wardens assigned are treated as vacuously finalized, same
+// as the server does — see schema.prisma's WardenFinalization comment.
+function unfinalizedHostelFloorsForClass(state, classId, date, session) {
+  const hostellers = state.students.filter((s) => s.classId === classId && s.roomId);
+  if (hostellers.length === 0) return [];
+  const roomFloor = new Map(state.hostelRooms.map((r) => [r.id, r.hostelFloorId]));
+  const floorIds = [...new Set(hostellers.map((s) => roomFloor.get(s.roomId)).filter(Boolean))];
+  const wardens = state.staff.filter((s) => s.role === "WARDEN");
+  const staffedFloorIds = floorIds.filter((id) => wardens.some((w) => (w.floorIds || []).includes(id)));
+  const finalizedIds = new Set(
+    (state.wardenFinalizations || []).filter((f) => f.date === date && f.session === session).map((f) => f.hostelFloorId)
+  );
+  return staffedFloorIds
+    .filter((id) => !finalizedIds.has(id))
+    .map((id) => state.hostelFloors.find((f) => f.id === id)?.name)
+    .filter(Boolean);
+}
+
+function DoClassCard({ c, record, date, session, students, state, runAction }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
   const [subTab, setSubTab] = useState("confirm"); // "confirm" (Window 1) | "reasons" (Window 2)
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
@@ -4856,6 +4967,7 @@ function DoClassCard({ c, record, date, session, students, runAction }) {
   const reasonedCount = list.filter((i) => i.verified).length;
   const allConfirmed = list.every((i) => i.confirmed);
   const allReasoned = list.every((i) => i.verified);
+  const pendingFloors = unfinalizedHostelFloorsForClass(state, c.id, date, session);
 
   const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason, session));
 
@@ -4956,8 +5068,9 @@ function DoClassCard({ c, record, date, session, students, runAction }) {
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned} onClick={() => runAction(() => api.approveStage(date, c.id, session), "Approved")}>
-              <CheckCircle2 size={14} /> {!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : "Approve list"}
+            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned || pendingFloors.length > 0} onClick={() => runAction(() => api.approveStage(date, c.id, session), "Approved")}>
+              <CheckCircle2 size={14} />
+              {!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : pendingFloors.length > 0 ? `Waiting on Warden finalization (${pendingFloors.join(", ")})` : "Approve list"}
             </Btn>
             {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason, session), "Sent back to Warden/LAI")} />}
           </div>
@@ -4992,7 +5105,7 @@ function DOScreen({ state, date, me, runAction }) {
       </div>
       <div className="space-y-4">
         {floorClasses.map((c) => (
-          <DoClassCard key={`${c.id}-${session}`} c={c} record={state.attendance[date]?.[c.id]?.[session] || emptyRecord()} date={date} session={session} students={state.students} runAction={runAction} />
+          <DoClassCard key={`${c.id}-${session}`} c={c} record={state.attendance[date]?.[c.id]?.[session] || emptyRecord()} date={date} session={session} students={state.students} state={state} runAction={runAction} />
         ))}
         {floorClasses.length === 0 && <EmptyNote text="No floor assigned to you yet." />}
       </div>

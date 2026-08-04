@@ -128,6 +128,7 @@ export const api = {
   // call sites that haven't been touched since Phase 1) — DOScreen's own
   // session switcher (see App.jsx) always passes the real one explicitly.
   setAbsence: (date, classId, studentId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/absence`, { method: "POST", body: { studentId, reason: reason || null } }),
+  finalizeFloor: (date, hostelFloorId, session = "morning") => request(`/attendance/${date}/${hostelFloorId}/${session}/finalize`, { method: "POST" }),
   confirmAbsent: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/confirm`, { method: "POST", body: { studentId } }),
   correctPresence: (date, classId, studentId, session = "morning") => request(`/attendance/${date}/${classId}/${session}/correct-presence`, { method: "POST", body: { studentId } }),
   verifyReason: (date, classId, studentId, reason, session = "morning") => request(`/attendance/${date}/${classId}/${session}/reason`, { method: "POST", body: { studentId, reason } }),
