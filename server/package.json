@@ -7,6 +7,7 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "seed": "node src/seed.js",
+    "seed:finalization-test": "node src/seedFinalizationTest.js",
     "report-duplicates": "node src/reportDuplicateStudents.js",
     "report-global-duplicate-rolls": "node src/reportGlobalDuplicateRolls.js",
     "prisma:generate": "prisma generate",
