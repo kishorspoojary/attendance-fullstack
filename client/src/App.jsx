@@ -511,6 +511,26 @@ function SendBackButton({ onSend, busy, disabled }) {
   );
 }
 
+// The one "an action is in flight, disable the instant it's clicked" pattern
+// used everywhere a button fires approve/send-back/finalize/co-sign — first
+// built for AOApprovals' ApprovalActions below, pulled out here so every
+// other screen with the same kind of action (ApprovalQueue, DoClassCard,
+// WardenReview's finalize button) shares one implementation instead of each
+// growing its own local busy state. `busy` is { id, action } | null; `id`
+// scopes it to one card among many sharing a single hook instance (e.g. one
+// pending change, one classroom, one hostel floor) so only the card actually
+// being acted on shows a spinner — its siblings on the SAME card gray out,
+// other cards stay fully interactable. Re-enables automatically if the
+// action throws (the `finally`), never needs a manual reset on failure.
+function useBusyAction() {
+  const [busy, setBusy] = useState(null);
+  const withBusy = async (id, action, fn) => {
+    setBusy({ id, action });
+    try { return await fn(); } finally { setBusy(null); }
+  };
+  return [busy, withBusy];
+}
+
 /* ---------------------------------------------------------------- */
 /* 3. Login, Registration, and mandatory password change              */
 /* ---------------------------------------------------------------- */
@@ -2018,19 +2038,28 @@ function ShowOlderToggle({ olderCount, shown, onShow }) {
 // siblings on the SAME card just gray out (no spinner) — other cards stay
 // fully interactable. Also blocks double-click as a duplicate-creation
 // vector, since the clicked button disables itself the instant it's clicked.
-// `busy` is { id, action } | null, shared across every card by AOApprovals
-// (only one action can plausibly be in flight from one person clicking).
-function ApprovalActions({ c, busy, onApprove, onReject, onSendBack, approveLabel }) {
+// `busy` is { id, action } | null — see useBusyAction above; shared across
+// every card in the caller's list (only one action can plausibly be in
+// flight from one person clicking). Reused well beyond its original
+// AOApprovals home now: ApprovalQueue (Lecturer's approve/send-back/
+// co-sign), DoClassCard (DO's approve/send-back), and WardenReview's
+// finalize button all go through this same component rather than each
+// hand-rolling their own version. `approveDisabled` layers in extra
+// business-logic gating on top of the busy state (e.g. DoClassCard's "not
+// every absentee is confirmed yet") — the label already carries whatever
+// explanation the caller wants shown for that; `approveIcon` lets a caller
+// keep its own icon (e.g. CheckCircle2) instead of the default Check.
+function ApprovalActions({ c, busy, onApprove, onReject, onSendBack, approveLabel, approveIcon: ApproveIcon = Check, approveVariant = "success", approveAction = "approve", approveDisabled }) {
   const cardBusy = busy?.id === c.id;
-  const isApproving = cardBusy && busy.action === "approve";
+  const isApproving = cardBusy && busy.action === approveAction;
   const isRejecting = cardBusy && busy.action === "reject";
   const isSendingBack = cardBusy && busy.action === "sendback";
   return (
     <>
       {onSendBack && <SendBackButton onSend={(reason) => onSendBack(c, reason)} busy={isSendingBack} disabled={cardBusy && !isSendingBack} />}
       <div className="flex gap-2">
-        <Btn size="sm" variant="success" disabled={cardBusy} onClick={() => onApprove(c)}>
-          {isApproving ? <Loader2 className="animate-spin" size={13} /> : <Check size={13} />} {isApproving ? "..." : approveLabel || "Approve"}
+        <Btn size="sm" variant={approveVariant} disabled={cardBusy || approveDisabled} onClick={() => onApprove(c)}>
+          {isApproving ? <Loader2 className="animate-spin" size={13} /> : <ApproveIcon size={13} />} {isApproving ? "..." : approveLabel || "Approve"}
         </Btn>
         {onReject && (
           <Btn size="sm" variant="danger" disabled={cardBusy} onClick={() => onReject(c)}>
@@ -2069,14 +2098,10 @@ function AOApprovals({ state, runAction }) {
   // here to whichever AO clicked approve, then gone.
   const [newStaffPassword, setNewStaffPassword] = useState(null); // { name, password }
   const [showOlderDecisions, setShowOlderDecisions] = useState(false);
-  // { id, action } | null — which pending change's Approve/Reject/Send back
-  // is currently in flight; see ApprovalActions above for how this both
-  // shows a spinner on the clicked button and blocks a double-click.
-  const [busy, setBusy] = useState(null);
-  const withBusy = async (id, action, fn) => {
-    setBusy({ id, action });
-    try { return await fn(); } finally { setBusy(null); }
-  };
+  // Which pending change's Approve/Reject/Send back is currently in flight —
+  // see useBusyAction and ApprovalActions above for how this both shows a
+  // spinner on the clicked button and blocks a double-click.
+  const [busy, withBusy] = useBusyAction();
 
   const approve = (c) => withBusy(c.id, "approve", async () => {
     const result = await runAction(() => api.approveChange(c.id), "Approved");
@@ -2829,6 +2854,16 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
   const items = withRecord.filter(({ r }) => (requiredPriorKey ? !!r[requiredPriorKey] : true) && !r[stageKey]);
   const done = withRecord.filter(({ r }) => !!r[stageKey]);
 
+  // One shared busy state for every action this screen fires (approve,
+  // send back, co-sign) — id-keyed by classroom id, so it works across both
+  // the pending `items` list and the `done` list's co-sign button without
+  // collision (a class is only ever in one of the two at a time). See
+  // useBusyAction/ApprovalActions above.
+  const [busy, withBusy] = useBusyAction();
+  const approve = (c) => withBusy(c.id, "approve", () => runAction(() => api.approveStage(date, c.id), "Approved"));
+  const sendBack = (c, reason) => withBusy(c.id, "sendback", () => runAction(() => api.sendBack(date, c.id, reason), "Sent back"));
+  const coSign = (c) => withBusy(c.id, "cosign", () => runAction(() => api.coSign(date, c.id), "Co-signed"));
+
   return (
     <div>
       <SectionTitle icon={ClipboardCheck} title={`${roleLabel} approval`} subtitle={note} />
@@ -2850,8 +2885,7 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
                   <div className="text-xs text-slate-500">{count} absent · headcount {r.headcount ?? "—"}</div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Btn size="sm" variant="success" onClick={() => runAction(() => api.approveStage(date, c.id), "Approved")}><Check size={13} /> Approve</Btn>
-                  <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason), "Sent back")} />
+                  <ApprovalActions c={c} busy={busy} onApprove={approve} onSendBack={sendBack} />
                 </div>
               </div>
               {count > 0 && (
@@ -2894,7 +2928,7 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
                   )}
                   {canCoSign && (
                     <div className="mt-1.5">
-                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.coSign(date, c.id), "Co-signed")}>Co-sign</Btn>
+                      <ApprovalActions c={c} busy={busy} onApprove={coSign} approveLabel="Co-sign" approveVariant="outline" approveAction="cosign" />
                     </div>
                   )}
                 </div>
@@ -4825,6 +4859,10 @@ function WardenScreen({ state, date, me, runAction }) {
 // that isn't part of this daily hand-off (see WardenScreen's away banner).
 function WardenReview({ state, date, me, runAction, allStudents }) {
   const myFloorIds = me.floorIds || [];
+  // One shared busy state across every floor card's finalize button — see
+  // useBusyAction/ApprovalActions above.
+  const [busy, withBusy] = useBusyAction();
+  const finalize = (f) => withBusy(f.id, "approve", () => runAction(() => api.finalizeFloor(date, f.id), "Floor finalized and sent to the DO"));
   return (
     <div className="space-y-4">
       {myFloorIds.map((floorId) => {
@@ -4859,9 +4897,7 @@ function WardenReview({ state, date, me, runAction, allStudents }) {
             )}
             {!finalized && (
               <div className="mt-3">
-                <Btn size="sm" variant="success" onClick={() => runAction(() => api.finalizeFloor(date, floorId), "Floor finalized and sent to the DO")}>
-                  <CheckCircle2 size={14} /> Finalize this floor's list
-                </Btn>
+                <ApprovalActions c={{ id: floorId }} busy={busy} onApprove={finalize} approveIcon={CheckCircle2} approveLabel="Finalize this floor's list" />
               </div>
             )}
           </Card>
@@ -4968,8 +5004,11 @@ function DoClassCard({ c, record, date, session, students, state, runAction }) {
   const allConfirmed = list.every((i) => i.confirmed);
   const allReasoned = list.every((i) => i.verified);
   const pendingFloors = unfinalizedHostelFloorsForClass(state, c.id, date, session);
+  const [busy, withBusy] = useBusyAction();
 
   const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason, session));
+  const approve = () => withBusy(c.id, "approve", () => runAction(() => api.approveStage(date, c.id, session), "Approved"));
+  const sendBack = (_c, reason) => withBusy(c.id, "sendback", () => runAction(() => api.sendBack(date, c.id, reason, session), "Sent back to Warden/LAI"));
 
   return (
     <Card className="p-4">
@@ -5068,11 +5107,15 @@ function DoClassCard({ c, record, date, session, students, state, runAction }) {
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Btn variant="success" disabled={approved || !allConfirmed || !allReasoned || pendingFloors.length > 0} onClick={() => runAction(() => api.approveStage(date, c.id, session), "Approved")}>
-              <CheckCircle2 size={14} />
-              {!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : pendingFloors.length > 0 ? `Waiting on Warden finalization (${pendingFloors.join(", ")})` : "Approve list"}
-            </Btn>
-            {!approved && <SendBackButton onSend={(reason) => runAction(() => api.sendBack(date, c.id, reason, session), "Sent back to Warden/LAI")} />}
+            <ApprovalActions
+              c={c}
+              busy={busy}
+              onApprove={approve}
+              onSendBack={approved ? undefined : sendBack}
+              approveIcon={CheckCircle2}
+              approveDisabled={approved || !allConfirmed || !allReasoned || pendingFloors.length > 0}
+              approveLabel={!allConfirmed ? "Finish the classroom check first" : !allReasoned ? "Call & confirm reasons first" : pendingFloors.length > 0 ? `Waiting on Warden finalization (${pendingFloors.join(", ")})` : "Approve list"}
+            />
           </div>
         </>
       )}
