@@ -132,7 +132,10 @@ const ROLE_LABELS = {
 // offboard are only backed by the server for these three roles, so the
 // client needs the same list to decide which rows get those buttons.
 const LEADERSHIP_ROLES = ["AO", "COORDINATOR", "DB_MANAGER"];
-const DAILY_REASONS = ["Sick", "Not in room", "Other"];
+// Mirrors server/src/constants.js's DAILY_REASONS/AWAY_REASON — no
+// shared-constants path across the client/server boundary (see that file's
+// comment), so these two copies must be kept in sync by hand.
+const DAILY_REASONS = ["Sick", "Medical treatment", "Other"];
 const AWAY_REASON = "Went home";
 
 // Every date shown as text (not inside a native <input type="date">, which
@@ -4854,9 +4857,14 @@ function WardenScreen({ state, date, me, runAction }) {
 // covers (not per class — see schema.prisma's WardenFinalization comment on
 // why finalizing is floor-scoped), listing every current absentee on that
 // floor with their reason, and the explicit "send it forward to the DO
-// stage" action. Only reflects wardenAbsences (this Warden's own daily
-// marks) — persistent "away" students are a separate, already-visible state
-// that isn't part of this daily hand-off (see WardenScreen's away banner).
+// stage" action. Combines wardenAbsences with persistent "away" students —
+// same merge every other absentee-listing screen does (DoClassCard,
+// ApprovalQueue, CoordinatorObserverView) — since an away student is still
+// absent today and belongs on this list even though it isn't a wardenAbsences
+// entry (see constants.js's DAILY_REASONS comment on why "Went home" never
+// touches today's record). Rendered as its own distinct row, not through the
+// reason picker other rows use, since away students aren't managed from here
+// at all — that's WardenScreen's "Mark reported" action instead.
 function WardenReview({ state, date, me, runAction, allStudents }) {
   const myFloorIds = me.floorIds || [];
   // One shared busy state across every floor card's finalize button — see
@@ -4875,6 +4883,7 @@ function WardenReview({ state, date, me, runAction, allStudents }) {
             return entry ? { student: s, entry, cls: state.classes.find((c) => c.id === s.classId) } : null;
           })
           .filter(Boolean);
+        const away = floorStudents.filter((s) => s.awayReason);
         const finalized = isHostelFloorFinalized(state, date, floorId);
 
         return (
@@ -4883,7 +4892,7 @@ function WardenReview({ state, date, me, runAction, allStudents }) {
               <p className="font-medium text-slate-800">{floor?.name}</p>
               {finalized ? <Badge tone="emerald"><CheckCircle2 size={12} /> Finalized — sent to DO</Badge> : <Badge tone="amber">Not yet finalized</Badge>}
             </div>
-            {absentees.length === 0 ? (
+            {absentees.length === 0 && away.length === 0 ? (
               <p className="text-sm text-slate-400">No absentees marked on this floor yet.</p>
             ) : (
               <ul className="space-y-1.5">
@@ -4893,6 +4902,15 @@ function WardenReview({ state, date, me, runAction, allStudents }) {
                     <span className="text-rose-700">{entry.reason}</span>
                   </li>
                 ))}
+                {away.map((s) => {
+                  const cls = state.classes.find((c) => c.id === s.classId);
+                  return (
+                    <li key={s.id} className="flex items-center justify-between rounded-lg bg-amber-50 px-3 py-1.5 text-sm">
+                      <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll}) — {cls?.name}</span></span>
+                      <span className="text-amber-700">Away since {formatDMY(s.awaySince)}</span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
             {!finalized && (

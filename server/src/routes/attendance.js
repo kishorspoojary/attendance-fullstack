@@ -321,6 +321,16 @@ attendanceRouter.post("/attendance/:date/:classId/:session/reason", requireAuth,
   if (!record.doConfirmed?.[studentId]) {
     return res.status(400).json({ error: "Confirm this student absent in the classroom check first" });
   }
+  // Same constraint as the Warden's own /absence route, plus one escape
+  // hatch: re-submitting the exact reason already sitting in
+  // wardenAbsences/laiAbsences must always pass, even if DAILY_REASONS has
+  // since changed and no longer includes it (e.g. an old "Not in room" entry
+  // from before it was replaced with "Medical treatment") — it was valid
+  // when the Warden set it, and this route only needs to reject genuinely
+  // new, invalid values, not old ones just passing through unchanged.
+  if (!DAILY_REASONS.includes(reason) && reason !== combined[studentId]?.reason) {
+    return res.status(400).json({ error: `Reason must be one of: ${DAILY_REASONS.join(", ")}` });
+  }
 
   const doVerified = { ...(record.doVerified || {}), [studentId]: { reason, verifiedBy: req.user.id, verifiedByName: req.user.name, at: nowTs() } };
   const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doVerified } });
