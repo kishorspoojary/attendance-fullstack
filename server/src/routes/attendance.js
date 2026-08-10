@@ -244,6 +244,43 @@ attendanceRouter.post(
 );
 
 // --------------------------------------------------------------------------
+// AO override: releases a Warden's exclusive claim on a floor (e.g. that
+// Warden is unreachable and someone else pooled on the floor needs to take
+// over) without needing them to finalize it first. Deliberately AO, not
+// Warden — this is a break-glass action for a stuck claim, not something a
+// Warden can do to another Warden. Requires a reason for the same reason
+// /send-back does: whoever asks later ("why did my claim disappear?") needs
+// an answer. Console-logged for now rather than a real audit trail — this
+// app has no Audit Log yet; once one exists, this is exactly the kind of
+// event it should record instead.
+// --------------------------------------------------------------------------
+attendanceRouter.post(
+  "/attendance/:date/:hostelFloorId/:session/release-lock",
+  requireAuth,
+  requireRole("AO"),
+  async (req, res) => {
+    const { date, hostelFloorId } = req.params;
+    const session = normalizeSession(req.params.session);
+    if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
+    const { reason } = req.body || {};
+    if (!reason || !reason.trim()) return res.status(400).json({ error: "A reason is required so there's a record of why this was released" });
+
+    const floorStart = await prisma.wardenFloorStart.findUnique({
+      where: { date_hostelFloorId_session: { date, hostelFloorId, session } },
+    });
+    if (!floorStart) return res.status(404).json({ error: "This floor has no active claim to release" });
+
+    await prisma.wardenFloorStart.delete({ where: { id: floorStart.id } });
+
+    // TODO: once this app has an Audit Log, this event belongs there instead
+    // of console.log — who released what, and why.
+    console.log(`[release-lock] ${req.user.name} (AO) released ${floorStart.byName}'s claim on hostel floor ${hostelFloorId} (${date}, ${session}). Reason: ${reason.trim()}`);
+
+    res.json({ released: true });
+  }
+);
+
+// --------------------------------------------------------------------------
 // STEP 2 — DO confirms or enters the reason for one absentee. Required for
 // --------------------------------------------------------------------------
 // STEP 2, WINDOW 1 — the classroom check. A DO walking into a classroom
