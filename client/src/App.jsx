@@ -27,7 +27,7 @@ import {
   Phone, Bell, LogIn, LogOut, Users, LayoutDashboard, Loader2, Pencil,
   Undo2, Search, UserPlus, Snowflake, KeyRound, Building2, FileDown, FileUp,
   CalendarSearch, UserX, ListTree, BookUser, ArrowRightLeft,
-  TrendingUp, TrendingDown, Minus, Home, ArrowLeft, ClipboardList,
+  TrendingUp, TrendingDown, Minus, Home, ArrowLeft, ClipboardList, Unlock,
 } from "lucide-react";
 import { api } from "./api.js";
 import { isAlwaysVisibleDecision } from "./recency.js";
@@ -493,21 +493,25 @@ function AccountLifecycleBanners({ resetResult, onDismissReset, offboardResult, 
 // `disabled` are distinct: busy means THIS card's send-back is in flight
 // (shows a spinner), disabled means some OTHER action on the same card is
 // in flight (no spinner, just grayed out) — see AOApprovals' ApprovalActions.
-function SendBackButton({ onSend, busy, disabled }) {
+// Defaults are the original send-back wording; every prop below is
+// overridable so other "type a reason, then confirm" actions (e.g.
+// AOHierarchyStatus's release-lock) can reuse this instead of a second copy
+// of the same open/reason state + two-step UI.
+function SendBackButton({ onSend, busy, disabled, label = "Send back", icon: Icon = Undo2, placeholder = "Why is this being sent back?", confirmLabel = "Confirm send back" }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   if (!open) {
     return (
       <Btn size="sm" variant="outline" disabled={busy || disabled} onClick={() => setOpen(true)}>
-        {busy ? <Loader2 className="animate-spin" size={13} /> : <Undo2 size={13} />} {busy ? "..." : "Send back"}
+        {busy ? <Loader2 className="animate-spin" size={13} /> : <Icon size={13} />} {busy ? "..." : label}
       </Btn>
     );
   }
   return (
     <div className="flex w-full flex-col gap-2 sm:w-64">
-      <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being sent back?" className={inputCls} />
+      <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder={placeholder} className={inputCls} />
       <div className="flex gap-2">
-        <Btn size="sm" variant="danger" disabled={!reason.trim()} onClick={() => { onSend(reason.trim()); setOpen(false); setReason(""); }}>Confirm send back</Btn>
+        <Btn size="sm" variant="danger" disabled={!reason.trim()} onClick={() => { onSend(reason.trim()); setOpen(false); setReason(""); }}>{confirmLabel}</Btn>
         <Btn size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
       </div>
     </div>
@@ -964,7 +968,7 @@ export default function App() {
               {activeTab === "leadership" && <LeadershipSetup state={state} runAction={runAction} />}
               {activeTab === "approvals" && <AOApprovals state={state} runAction={runAction} />}
               {activeTab === "freeze" && <AOFreezeAccounts state={state} runAction={runAction} me={me} />}
-              {activeTab === "hierarchy" && <AOHierarchyStatus state={state} />}
+              {activeTab === "hierarchy" && <AOHierarchyStatus state={state} runAction={runAction} />}
               {activeTab === "staffdirectory" && <StaffDirectory />}
               {activeTab === "viewstudents" && <ViewStudents me={me} />}
               {activeTab === "coordinator" && <CoordinatorApprovals state={state} date={date} runAction={runAction} />}
@@ -2362,9 +2366,22 @@ function AOFreezeAccounts({ state, runAction, me }) {
   );
 }
 
-function AOHierarchyStatus({ state }) {
+function AOHierarchyStatus({ state, runAction }) {
   const byRole = (role) => state.staff.filter((s) => s.role === role);
   const wardens = byRole("WARDEN"), dos = byRole("DO"), teachers = byRole("LECTURER"), lais = byRole("LAI");
+
+  // "Active" = a WardenFloorStart with no matching WardenFinalization for
+  // the same (date, hostelFloor, session) yet — a floor someone claimed and
+  // hasn't finished (or been released from). Not date-scoped to "today": a
+  // stale claim from days ago that nobody ever finalized or released is
+  // exactly the kind of stuck lock this list exists to surface.
+  const activeLocks = (state.wardenFloorStarts || []).filter(
+    (s) => !(state.wardenFinalizations || []).some((f) => f.date === s.date && f.session === s.session && f.hostelFloorId === s.hostelFloorId)
+  );
+  const [busy, withBusy] = useBusyAction();
+  const release = (lock, reason) => withBusy(lock.id, "sendback", () =>
+    runAction(() => api.releaseFloorLock(lock.date, lock.hostelFloorId, reason, lock.session.toLowerCase()), "Lock released")
+  );
 
   const hostelFloorsWithoutWarden = state.hostelFloors.filter((f) => !wardens.some((w) => (w.floorIds || []).includes(f.id)));
   const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
@@ -2405,6 +2422,33 @@ function AOHierarchyStatus({ state }) {
               <p className="font-medium">{gaps.length} thing(s) to review</p>
               <ul className="mt-1 list-inside list-disc text-amber-700">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
             </div>
+          </div>
+        </Card>
+      )}
+      {activeLocks.length > 0 && (
+        <Card className="mb-5 p-4">
+          <p className="mb-3 text-sm font-semibold text-slate-700">Active floor locks</p>
+          <div className="space-y-2">
+            {activeLocks.map((lock) => {
+              const floor = state.hostelFloors.find((f) => f.id === lock.hostelFloorId);
+              return (
+                <div key={lock.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium text-slate-700">{floor?.name}</span>
+                    <span className="ml-2 text-xs text-slate-500">Started by {lock.byName} · {formatTime(lock.at)}</span>
+                  </div>
+                  <SendBackButton
+                    onSend={(reason) => release(lock, reason)}
+                    busy={busy?.id === lock.id}
+                    disabled={busy && busy.id !== lock.id}
+                    label="Release lock"
+                    icon={Unlock}
+                    placeholder="Why release this lock?"
+                    confirmLabel="Confirm release"
+                  />
+                </div>
+              );
+            })}
           </div>
         </Card>
       )}
@@ -4731,6 +4775,16 @@ function isHostelFloorFinalized(state, date, hostelFloorId) {
   return (state.wardenFinalizations || []).some((f) => f.date === date && f.session === DEFAULT_SESSION && f.hostelFloorId === hostelFloorId);
 }
 
+// The other end of the same lock (see schema.prisma's WardenFloorStart
+// comment) — whichever pooled Warden wrote the first POST .../absence for a
+// floor/date/session claims it until they finalize it or an AO releases the
+// claim. Returns the row itself (not just a bool, unlike
+// isHostelFloorFinalized above) since callers need who — byName for the
+// banner text, by to compare against the logged-in Warden's own id.
+function getHostelFloorStart(state, date, hostelFloorId) {
+  return (state.wardenFloorStarts || []).find((f) => f.date === date && f.session === DEFAULT_SESSION && f.hostelFloorId === hostelFloorId) || null;
+}
+
 function WardenScreen({ state, date, me, runAction }) {
   // A Warden's students are every hosteller in any room on one of their
   // assigned hostel floors (me.floorIds) — resolved via state.hostelRooms
@@ -4749,6 +4803,14 @@ function WardenScreen({ state, date, me, runAction }) {
   const q = search.trim().toLowerCase();
   const visiblePresent = !q ? present : present.filter((s) => s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
 
+  // Floors this Warden covers that someone ELSE has already started marking
+  // — see schema.prisma's WardenFloorStart comment. Shown as a banner so a
+  // Warden understands WHY they suddenly can't act on some of their
+  // students, rather than just finding individual rows silently locked.
+  const lockedByOther = myFloorIds
+    .map((id) => ({ floor: state.hostelFloors.find((f) => f.id === id), start: getHostelFloorStart(state, date, id) }))
+    .filter(({ start }) => start && start.by !== me.id);
+
   return (
     <div>
       <SectionTitle icon={Bed} title="Mark hostel absentees" subtitle={`Covering ${myRooms.length} room(s) today — picking a reason marks a student absent.`} />
@@ -4766,6 +4828,20 @@ function WardenScreen({ state, date, me, runAction }) {
         <WardenReview state={state} date={date} me={me} runAction={runAction} allStudents={allStudents} />
       ) : (
         <>
+          {lockedByOther.length > 0 && (
+            <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
+              <p className="mb-2 text-sm font-semibold text-amber-800">Started by another Warden — you can view but not edit these floors until they're finalized</p>
+              <div className="space-y-1.5">
+                {lockedByOther.map(({ floor, start }) => (
+                  <div key={floor?.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
+                    <span className="text-slate-700">{floor?.name}</span>
+                    <span className="text-xs text-slate-500">Started by {start.byName} · {formatTime(start.at)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {away.length > 0 && (
             <Card className="mb-4 border-amber-200 bg-amber-50 p-4">
               <p className="mb-2 text-sm font-semibold text-amber-800">Away — counted absent automatically until reported back</p>
@@ -4801,12 +4877,15 @@ function WardenScreen({ state, date, me, runAction }) {
                     {list.map((s) => {
                       const entry = bucket[s.id];
                       const choosing = pickerFor === s.id;
-                      // Locked either because the DO's already verified the whole
-                      // class, or because this student's own floor has already
-                      // been finalized by this Warden — the class can still be
-                      // wide open (other floors feeding it may not be finalized
-                      // yet), but this student's entry is done either way.
-                      const locked = classLocked || isHostelFloorFinalized(state, date, roomFloorById.get(s.roomId));
+                      // Locked because the DO's already verified the whole class,
+                      // because this student's own floor has already been
+                      // finalized (the class can still be wide open — other
+                      // floors feeding it may not be finalized yet — but this
+                      // student's entry is done either way), or because another
+                      // Warden started this floor first and holds the claim.
+                      const floorId = roomFloorById.get(s.roomId);
+                      const floorStart = getHostelFloorStart(state, date, floorId);
+                      const locked = classLocked || isHostelFloorFinalized(state, date, floorId) || (floorStart && floorStart.by !== me.id);
                       return (
                         <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
                           <div className="flex items-center justify-between">
@@ -4899,7 +4978,10 @@ function WardenReview({ state, date, me, runAction, allStudents }) {
                 {absentees.map(({ student, entry, cls }) => (
                   <li key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-sm">
                     <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {cls?.name}</span></span>
-                    <span className="text-rose-700">{entry.reason}</span>
+                    <span className="text-right">
+                      <span className="block text-rose-700">{entry.reason}</span>
+                      <span className="block text-xs text-slate-400">marked by {entry.byName}</span>
+                    </span>
                   </li>
                 ))}
                 {away.map((s) => {
