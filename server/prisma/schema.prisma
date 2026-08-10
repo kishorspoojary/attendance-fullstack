@@ -113,6 +113,7 @@ model HostelFloor {
   rooms    HostelRoom[]
 
   wardenFinalizations WardenFinalization[]
+  wardenFloorStarts   WardenFloorStart[]
 }
 
 model HostelRoom {
@@ -323,5 +324,37 @@ model WardenFinalization {
   // for the same pattern applied to JSON fields) — two Wardens pooled on the
   // same floor finalizing at once should have the second attempt rejected,
   // not silently create a duplicate.
+  @@unique([date, hostelFloorId, session])
+}
+
+// The other end of the same one-way-lock idea as WardenFinalization above,
+// but at the START of marking instead of the end: whichever pooled Warden
+// is first to write a POST .../absence for a given (date, hostelFloor,
+// session) exclusively claims it — every other Warden pooled on that same
+// floor is locked out of writing until either (a) the claimant finalizes it
+// (WardenFinalization above already blocks writes once that happens, on its
+// own), or (b) an AO releases the claim via POST .../release-lock (see
+// routes/attendance.js). Same shape as WardenFinalization on purpose —
+// same identity fields (date/hostelFloor/session/by/byName/at), same
+// per-floor-not-per-class scoping and the same reasoning for why it can't
+// be scoped to a single AttendanceRecord. Deliberately NOT deleted when the
+// floor is finalized — a finalized floor's start row is harmless (the
+// finalization check already blocks writes on its own by then) and keeping
+// it lets AOHierarchyStatus's lock list and any future audit trail still
+// answer "who actually started this floor" after the fact.
+model WardenFloorStart {
+  id            String      @id @default(cuid())
+  date          String // "YYYY-MM-DD", same convention as AttendanceRecord.date
+  hostelFloorId String
+  hostelFloor   HostelFloor @relation(fields: [hostelFloorId], references: [id])
+  session       Session     @default(MORNING)
+  by            String
+  byName        String
+  at            DateTime    @default(now())
+
+  // Same race guard as WardenFinalization's — two pooled Wardens racing to
+  // be "first" on the same floor should have the loser's create swallowed
+  // (see routes/attendance.js's P2002 handling), not silently overwrite who
+  // actually claimed it.
   @@unique([date, hostelFloorId, session])
 }
