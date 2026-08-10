@@ -132,6 +132,13 @@ attendanceRouter.post(
     if (req.user.role === "LAI" && !(req.user.classIds || []).includes(classId)) {
       return res.status(403).json({ error: "This class isn't assigned to you" });
     }
+    // LAI is only incharge of local (day scholar) students — a classroom
+    // can hold both day scholars and hostellers, and marking a hosteller
+    // absent is the Warden's job, not the LAI's. Same spirit as the Warden
+    // hostel-floor check just above, mirrored for the LAI/local side.
+    if (req.user.role === "LAI" && !student.isLocal) {
+      return res.status(403).json({ error: "This student is a hosteller — only their Warden can mark them absent" });
+    }
     if (req.user.role === "WARDEN" && reason && !DAILY_REASONS.includes(reason)) {
       return res.status(400).json({ error: `Reason must be one of: ${DAILY_REASONS.join(", ")} (use the "away" action for students who went home)` });
     }
@@ -160,7 +167,6 @@ attendanceRouter.post(
     res.json({ record: updated });
   }
 );
-
 // --------------------------------------------------------------------------
 // STEP 1B — Warden finalizes their floor's absentee list for a date/session,
 // explicitly sending it forward to the DO stage. Scoped to a hostel floor,
