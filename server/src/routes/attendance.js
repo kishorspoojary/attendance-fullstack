@@ -143,6 +143,36 @@ attendanceRouter.post(
       return res.status(400).json({ error: `Reason must be one of: ${DAILY_REASONS.join(", ")} (use the "away" action for students who went home)` });
     }
 
+    // Exclusive claim: whichever pooled Warden is first to write here for
+    // this floor/date/session claims it \u2014 every other Warden pooled on the
+    // same floor is locked out until either the claimant finalizes it (the
+    // finalization check right below already blocks writes on its own once
+    // that happens) or an AO releases the claim via POST .../release-lock.
+    // Read-then-create below isn't atomic on its own \u2014 the real race guard
+    // is the table's own unique constraint (the P2002 catch), same pattern
+    // /finalize already uses for its own one-way lock.
+    if (req.user.role === "WARDEN") {
+      const floorStartWhere = { date_hostelFloorId_session: { date, hostelFloorId: studentFloorId, session } };
+      const existingStart = await prisma.wardenFloorStart.findUnique({ where: floorStartWhere });
+      if (existingStart && existingStart.by !== req.user.id) {
+        return res.status(409).json({ error: `This floor was started by ${existingStart.byName} \u2014 only they can continue until it's finalized` });
+      }
+      if (!existingStart) {
+        try {
+          await prisma.wardenFloorStart.create({ data: { date, hostelFloorId: studentFloorId, session, by: req.user.id, byName: req.user.name } });
+        } catch (err) {
+          if (err.code !== "P2002") throw err;
+          // Someone else's create won the race between our read above and
+          // this write \u2014 find out who, rather than silently letting our
+          // write through as if we'd claimed it.
+          const winner = await prisma.wardenFloorStart.findUnique({ where: floorStartWhere });
+          if (winner && winner.by !== req.user.id) {
+            return res.status(409).json({ error: `This floor was started by ${winner.byName} \u2014 only they can continue until it's finalized` });
+          }
+        }
+      }
+    }
+
     // Once a Warden has finalized this floor for this date/session (see
     // POST .../finalize below), their whole floor is done \u2014 no more edits,
     // same "locked" spirit as the doApproved check right below, just scoped
@@ -187,6 +217,18 @@ attendanceRouter.post(
     if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
     if (!(req.user.floorIds || []).includes(hostelFloorId)) {
       return res.status(403).json({ error: "This hostel floor isn't assigned to you" });
+    }
+
+    // If someone has claimed this floor (see POST .../absence's start-lock),
+    // only they can finalize it — a 403, not a 409: this is an authorization
+    // failure (wrong person), not a race against a concurrent request. A
+    // clean floor (no start row — e.g. nothing was ever marked, or an AO
+    // released the claim) is unchanged: any Warden pooled on it can finalize.
+    const floorStart = await prisma.wardenFloorStart.findUnique({
+      where: { date_hostelFloorId_session: { date, hostelFloorId, session } },
+    });
+    if (floorStart && floorStart.by !== req.user.id) {
+      return res.status(403).json({ error: `This floor was started by ${floorStart.byName} — only they can finalize it` });
     }
 
     try {
