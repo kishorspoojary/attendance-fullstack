@@ -102,6 +102,18 @@ const nowHHMM = () => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
+// Which role writes absence data first for this class's floor — see
+// schema.prisma's AttendanceMode comment. Defaults to DO_FIRST if the class/
+// floor lookup somehow comes back empty, matching CollegeFloor.attendanceMode's
+// own column default rather than leaving callers to handle a third state.
+async function getFloorAttendanceMode(classId) {
+  const classroom = await prisma.classroom.findUnique({
+    where: { id: classId },
+    include: { collegeFloor: true },
+  });
+  return classroom?.collegeFloor?.attendanceMode || "DO_FIRST";
+}
+
 // --------------------------------------------------------------------------
 // STEP 1 — Warden or LAI marks a student absent (or clears them).
 // "Upsert" style: the frontend always sends the reason it wants right now.
@@ -116,6 +128,15 @@ attendanceRouter.post(
     const { date, classId } = req.params;
     const session = normalizeSession(req.params.session);
     if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
+
+    // This floor's classes might be running DO-first instead (see
+    // schema.prisma's AttendanceMode comment and POST .../do-absence below)
+    // — Warden/LAI marking only opens once the floor is (still) WARDEN_FIRST.
+    const mode = await getFloorAttendanceMode(classId);
+    if (mode !== "WARDEN_FIRST") {
+      return res.status(400).json({ error: "Attendance is running DO-first for this floor — Warden/LAI marking isn't open yet" });
+    }
+
     const { studentId, reason } = req.body || {};
     if (!studentId) return res.status(400).json({ error: "studentId is required" });
 
@@ -197,6 +218,63 @@ attendanceRouter.post(
     res.json({ record: updated });
   }
 );
+
+// --------------------------------------------------------------------------
+// DO-first mode's own version of STEP 1 — only open when this floor's
+// CollegeFloor.attendanceMode is DO_FIRST (see schema.prisma's AttendanceMode
+// comment), the mirror image of /absence's WARDEN_FIRST gate above. Marking
+// absent here IS the confirmation (doConfirmed is set in the same write) —
+// there's no external Warden/LAI report to confirm against on a DO-first
+// floor, so Window 1 of the usual DO flow (see /confirm below) collapses
+// into this one action. Window 2 (the actual reason) still goes through the
+// existing /reason route unchanged — doVerified is untouched here on
+// purpose, same as a WARDEN_FIRST floor's doVerified is only ever set there.
+// Same upsert style as /absence: no reason clears the entry.
+// --------------------------------------------------------------------------
+attendanceRouter.post("/attendance/:date/:classId/:session/do-absence", requireAuth, requireRole("DO"), async (req, res) => {
+  const { date, classId } = req.params;
+  const session = normalizeSession(req.params.session);
+  if (!session) return res.status(400).json({ error: "session must be morning or afternoon" });
+  const { studentId, reason } = req.body || {};
+  if (!studentId) return res.status(400).json({ error: "studentId is required" });
+
+  const classroom = await prisma.classroom.findUnique({ where: { id: classId } });
+  if (!classroom || !(req.user.floorIds || []).includes(classroom.collegeFloorId)) {
+    return res.status(403).json({ error: "This class's floor isn't assigned to you" });
+  }
+
+  const mode = await getFloorAttendanceMode(classId);
+  if (mode !== "DO_FIRST") {
+    return res.status(400).json({ error: "Only available when this floor is running DO-first" });
+  }
+
+  const record = await getOrCreateRecord(date, classId, session);
+  if (record.doApproved) return res.status(409).json({ error: "Already approved" });
+
+  const doAbsences = { ...(record.doAbsences || {}) };
+  const doConfirmed = { ...(record.doConfirmed || {}) };
+  if (!reason) {
+    // Clearing fully resets this student's state, same reasoning as
+    // /correct-presence: without an external report to fall back to, an
+    // undone DO-first entry shouldn't leave a stale confirmation or
+    // verified reason behind either.
+    const doVerified = { ...(record.doVerified || {}) };
+    delete doAbsences[studentId];
+    delete doConfirmed[studentId];
+    delete doVerified[studentId];
+    const updated = await prisma.attendanceRecord.update({
+      where: { id: record.id },
+      data: { doAbsences, doConfirmed, doVerified },
+    });
+    return res.json({ record: updated });
+  }
+
+  doAbsences[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs(), reason };
+  doConfirmed[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs() };
+  const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doAbsences, doConfirmed } });
+  res.json({ record: updated });
+});
+
 // --------------------------------------------------------------------------
 // STEP 1B — Warden finalizes their floor's absentee list for a date/session,
 // explicitly sending it forward to the DO stage. Scoped to a hostel floor,
@@ -304,7 +382,7 @@ attendanceRouter.post("/attendance/:date/:classId/:session/confirm", requireAuth
   const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
-  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}), ...(record.doAbsences || {}) };
   if (!combined[studentId]) return res.status(400).json({ error: "That student isn't on today's absentee list" });
 
   const doConfirmed = { ...(record.doConfirmed || {}), [studentId]: { by: req.user.id, byName: req.user.name, at: nowTs() } };
@@ -366,16 +444,18 @@ attendanceRouter.post("/attendance/:date/:classId/:session/correct-presence", re
 
   const wardenAbsences = { ...(record.wardenAbsences || {}) };
   const laiAbsences = { ...(record.laiAbsences || {}) };
+  const doAbsences = { ...(record.doAbsences || {}) };
   const doConfirmed = { ...(record.doConfirmed || {}) };
   const doVerified = { ...(record.doVerified || {}) };
   delete wardenAbsences[studentId];
   delete laiAbsences[studentId];
+  delete doAbsences[studentId];
   delete doConfirmed[studentId];
   delete doVerified[studentId];
 
   const updated = await prisma.attendanceRecord.update({
     where: { id: record.id },
-    data: { wardenAbsences, laiAbsences, doConfirmed, doVerified },
+    data: { wardenAbsences, laiAbsences, doAbsences, doConfirmed, doVerified },
   });
   res.json({ record: updated });
 });
@@ -401,7 +481,7 @@ attendanceRouter.post("/attendance/:date/:classId/:session/reason", requireAuth,
   const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
-  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}), ...(record.doAbsences || {}) };
   if (!combined[studentId]) return res.status(400).json({ error: "That student isn't on today's absentee list" });
   if (!record.doConfirmed?.[studentId]) {
     return res.status(400).json({ error: "Confirm this student absent in the classroom check first" });
@@ -500,6 +580,10 @@ attendanceRouter.post(
       return res.status(403).json({ error: "This class's floor isn't assigned to you" });
     }
 
+    // Computed once, reused below — DO_FIRST floors have no Warden
+    // finalization step to wait on (see the doApproved block further down).
+    const mode = await getFloorAttendanceMode(classId);
+
     const record = await getOrCreateRecord(date, classId, session);
     // Fast path: reject the common sequential case (someone already
     // approved, no race involved) before spending time on the validation
@@ -518,11 +602,17 @@ attendanceRouter.post(
       return res.status(400).json({ error: "Enter the headcount before approving" });
     }
     if (stageKey === "doApproved") {
-      const pendingFloors = await unfinalizedFloorsForClass(date, session, classId);
-      if (pendingFloors.length > 0) {
-        return res.status(400).json({ error: `Waiting on Warden finalization from: ${pendingFloors.join(", ")}` });
+      // A DO-first floor has no Warden report to wait on — the DO's own
+      // do-absence entries ARE the list, already confirmed by construction
+      // (see POST .../do-absence above). unfinalizedFloorsForClass only
+      // means anything on a WARDEN_FIRST floor.
+      if (mode !== "DO_FIRST") {
+        const pendingFloors = await unfinalizedFloorsForClass(date, session, classId);
+        if (pendingFloors.length > 0) {
+          return res.status(400).json({ error: `Waiting on Warden finalization from: ${pendingFloors.join(", ")}` });
+        }
       }
-      const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+      const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}), ...(record.doAbsences || {}) };
       const unconfirmed = Object.keys(combined).filter((sid) => !record.doConfirmed?.[sid]);
       if (unconfirmed.length > 0) {
         return res.status(400).json({ error: `Confirm every absentee in the classroom check first (${unconfirmed.length} remaining)` });
