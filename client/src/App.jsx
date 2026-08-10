@@ -4862,8 +4862,13 @@ function WardenScreen({ state, date, me, runAction }) {
           <div className="space-y-4">
             {Object.entries(groupBy(visiblePresent, (s) => s.classId)).map(([classId, list]) => {
               const cls = state.classes.find((c) => c.id === classId);
+              const collegeFloor = state.collegeFloors.find((f) => f.id === cls?.collegeFloorId);
               const r = state.attendance[date]?.[classId]?.[DEFAULT_SESSION] || emptyRecord();
               const classLocked = !!r.doApproved;
+              // See schema.prisma's AttendanceMode comment — Warden marking
+              // is only open on a WARDEN_FIRST floor; on a DO_FIRST floor the
+              // DO enters absences directly (POST .../do-absence) instead.
+              const modeLocked = collegeFloor?.attendanceMode !== "WARDEN_FIRST";
               const bucket = r.wardenAbsences || {};
               const sentBackHere = r.sentBack?.toStage === "warden_lai";
               return (
@@ -4871,13 +4876,16 @@ function WardenScreen({ state, date, me, runAction }) {
                   {sentBackHere && <SentBackBanner record={r} />}
                   <div className="mb-2 flex items-center justify-between">
                     <p className="font-medium text-slate-800">{cls?.name}</p>
-                    {classLocked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge> : <Badge tone="amber">Awaiting your input</Badge>}
+                    {modeLocked ? <Badge tone="slate">DO-first mode — not open to Wardens yet</Badge>
+                      : classLocked ? <Badge tone="emerald"><CheckCircle2 size={12} /> Verified by DO — no action needed</Badge>
+                      : <Badge tone="amber">Awaiting your input</Badge>}
                   </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {list.map((s) => {
                       const entry = bucket[s.id];
                       const choosing = pickerFor === s.id;
                       // Locked because the DO's already verified the whole class,
+                      // because this floor is running DO-first (modeLocked),
                       // because this student's own floor has already been
                       // finalized (the class can still be wide open — other
                       // floors feeding it may not be finalized yet — but this
@@ -4885,7 +4893,7 @@ function WardenScreen({ state, date, me, runAction }) {
                       // Warden started this floor first and holds the claim.
                       const floorId = roomFloorById.get(s.roomId);
                       const floorStart = getHostelFloorStart(state, date, floorId);
-                      const locked = classLocked || isHostelFloorFinalized(state, date, floorId) || (floorStart && floorStart.by !== me.id);
+                      const locked = classLocked || modeLocked || isHostelFloorFinalized(state, date, floorId) || (floorStart && floorStart.by !== me.id);
                       return (
                         <div key={s.id} className={`rounded-lg border px-2.5 py-1.5 text-xs ${entry ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`}>
                           <div className="flex items-center justify-between">
