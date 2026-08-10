@@ -141,6 +141,23 @@ model CollegeFloor {
   // /attendance/:date/cutoff for any Lecturer on this floor — see
   // routes/attendance.js's /floor-cutoff.
   dailyDeadline String?
+
+  // AO-controlled per floor — see the AttendanceMode enum's comment above
+  // for what each value means. Defaults to DO_FIRST since that's this app's
+  // original, still-normal daily order; WARDEN_FIRST is the opt-in flip.
+  attendanceMode AttendanceMode @default(DO_FIRST)
+}
+
+// Which of the two roles gets to write absence data FIRST for a given
+// college floor's classrooms — DO_FIRST is how this app has always worked
+// (Warden/LAI report, then the DO confirms/verifies), WARDEN_FIRST flips
+// the daily order so the DO enters absences directly (see
+// routes/attendance.js's POST .../do-absence) instead of waiting on a
+// Warden/LAI report. AO-controlled, per CollegeFloor — see PATCH
+// /college-floors/:id/attendance-mode in routes/collegeFloors.js.
+enum AttendanceMode {
+  DO_FIRST
+  WARDEN_FIRST
 }
 
 // "Classroom" is what the code calls it; to staff this is a "class" or
@@ -266,6 +283,16 @@ model AttendanceRecord {
   headcount      Int? // physical count the DO enters before they can approve
   wardenAbsences Json @default("{}") // { studentId: {by, byName, at, reason, isLocal} } — isLocal is a snapshot of the student's boarding status at the moment they were marked absent, not a live lookup
   laiAbsences    Json @default("{}") // { studentId: {by, byName, at, reason: null, isLocal} } — LAI never sets a reason; isLocal snapshot same as wardenAbsences
+  // A DO's own absence reports, only ever written when this class's
+  // CollegeFloor.attendanceMode is DO_FIRST — see POST .../do-absence in
+  // routes/attendance.js. Same shape as
+  // wardenAbsences minus isLocal (never needed here: unlike a Warden's
+  // report, this is the DO's own direct entry, not a snapshot of someone
+  // else's). Merged into every wardenAbsences+laiAbsences "combined
+  // absentee list" read throughout attendance.js so the rest of the
+  // pipeline (confirm counts, /approve's checks) doesn't need to
+  // special-case DO-first floors.
+  doAbsences Json @default("{}") // { studentId: {by, byName, at, reason} }
 
   doConfirmed Json @default("{}") // { studentId: {by, byName, at} } — Window 1: confirmed absent in the classroom
   doVerified  Json @default("{}") // { studentId: {reason, verifiedBy, verifiedByName, at} } — Window 2: reason after calling
