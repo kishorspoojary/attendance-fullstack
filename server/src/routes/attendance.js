@@ -220,16 +220,24 @@ attendanceRouter.post(
 );
 
 // --------------------------------------------------------------------------
-// DO-first mode's own version of STEP 1 — only open when this floor's
-// CollegeFloor.attendanceMode is DO_FIRST (see schema.prisma's AttendanceMode
-// comment), the mirror image of /absence's WARDEN_FIRST gate above. Marking
-// absent here IS the confirmation (doConfirmed is set in the same write) —
-// there's no external Warden/LAI report to confirm against on a DO-first
-// floor, so Window 1 of the usual DO flow (see /confirm below) collapses
+// DO-first mode's own version of STEP 1 — always open on a DO_FIRST floor,
+// the mirror image of /absence's WARDEN_FIRST gate above. Also available as
+// an overflow valve on a WARDEN_FIRST floor, but only once every
+// Warden-staffed hostel floor feeding this class has finalized (same
+// unfinalizedFloorsForClass check /approve's doApproved gate uses, further
+// down this file — function declarations are hoisted, so it's safe to call
+// from here despite being defined later in the source) — e.g. a day scholar
+// the Warden report never covers, or a straggler nobody caught before every
+// floor locked in. Marking absent here IS the confirmation (doConfirmed is
+// set in the same write) — there's no external Warden/LAI report to confirm
+// against, so Window 1 of the usual DO flow (see /confirm below) collapses
 // into this one action. Window 2 (the actual reason) still goes through the
 // existing /reason route unchanged — doVerified is untouched here on
 // purpose, same as a WARDEN_FIRST floor's doVerified is only ever set there.
-// Same upsert style as /absence: no reason clears the entry.
+// `reason` is optional — a bare mark-absent with no reason yet is valid and
+// gets filled in later via /reason, same as a Warden's own /absence entry
+// can start reason-less. There's no "clear" behavior here any more; undoing
+// a DO-marked absence goes through /correct-presence like everything else.
 // --------------------------------------------------------------------------
 attendanceRouter.post("/attendance/:date/:classId/:session/do-absence", requireAuth, requireRole("DO"), async (req, res) => {
   const { date, classId } = req.params;
@@ -245,32 +253,17 @@ attendanceRouter.post("/attendance/:date/:classId/:session/do-absence", requireA
 
   const mode = await getFloorAttendanceMode(classId);
   if (mode !== "DO_FIRST") {
-    return res.status(400).json({ error: "Only available when this floor is running DO-first" });
+    const pendingFloors = await unfinalizedFloorsForClass(date, session, classId);
+    if (pendingFloors.length > 0) {
+      return res.status(400).json({ error: `Waiting on Warden finalization from: ${pendingFloors.join(", ")}` });
+    }
   }
 
   const record = await getOrCreateRecord(date, classId, session);
   if (record.doApproved) return res.status(409).json({ error: "Already approved" });
 
-  const doAbsences = { ...(record.doAbsences || {}) };
-  const doConfirmed = { ...(record.doConfirmed || {}) };
-  if (!reason) {
-    // Clearing fully resets this student's state, same reasoning as
-    // /correct-presence: without an external report to fall back to, an
-    // undone DO-first entry shouldn't leave a stale confirmation or
-    // verified reason behind either.
-    const doVerified = { ...(record.doVerified || {}) };
-    delete doAbsences[studentId];
-    delete doConfirmed[studentId];
-    delete doVerified[studentId];
-    const updated = await prisma.attendanceRecord.update({
-      where: { id: record.id },
-      data: { doAbsences, doConfirmed, doVerified },
-    });
-    return res.json({ record: updated });
-  }
-
-  doAbsences[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs(), reason };
-  doConfirmed[studentId] = { by: req.user.id, byName: req.user.name, at: nowTs() };
+  const doAbsences = { ...(record.doAbsences || {}), [studentId]: { by: req.user.id, byName: req.user.name, at: nowTs(), reason: reason || null } };
+  const doConfirmed = { ...(record.doConfirmed || {}), [studentId]: { by: req.user.id, byName: req.user.name, at: nowTs() } };
   const updated = await prisma.attendanceRecord.update({ where: { id: record.id }, data: { doAbsences, doConfirmed } });
   res.json({ record: updated });
 });
