@@ -5090,10 +5090,24 @@ function unfinalizedHostelFloorsForClass(state, classId, date, session) {
     .filter(Boolean);
 }
 
-function DoClassCard({ c, record, date, session, students, state, runAction }) {
+function DoClassCard({ c, record, date, session, students, state, runAction, pendingFloors }) {
   const [headcount, setHeadcount] = useState(record.headcount ?? "");
   const [subTab, setSubTab] = useState("confirm"); // "confirm" (Window 1) | "reasons" (Window 2)
-  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}) };
+  // Client-side-only "I actively corrected this student to present" memory
+  // for Window 1's roster view below — never sent to the server (there's no
+  // backend field for it, and there doesn't need to be: reloading mid-session
+  // just drops a student back to "Not reported", which is fine — see the
+  // roster-grouping comment further down for why that's the right fallback).
+  const [presentOverrides, setPresentOverrides] = useState(new Set());
+  const [rosterQuery, setRosterQuery] = useState("");
+
+  // Same three-source merge /confirm, /reason, and /correct-presence already
+  // use server-side (see attendance.js) — doAbsences included so a
+  // DO-originated absentee (see markDoAbsent below) counts toward
+  // confirmed/reasoned/approve-gating exactly like a Warden/LAI one does.
+  // The wider doAbsences-merge sweep across the rest of this file is a
+  // separate task; this is the one spot that can't work at all without it.
+  const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}), ...(record.doAbsences || {}) };
   const list = Object.entries(combined).map(([sid, meta]) => ({
     student: students.find((s) => s.id === sid), meta,
     confirmed: !!record.doConfirmed?.[sid],
@@ -5111,12 +5125,71 @@ function DoClassCard({ c, record, date, session, students, state, runAction }) {
   const reasonedCount = list.filter((i) => i.verified).length;
   const allConfirmed = list.every((i) => i.confirmed);
   const allReasoned = list.every((i) => i.verified);
-  const pendingFloors = unfinalizedHostelFloorsForClass(state, c.id, date, session);
   const [busy, withBusy] = useBusyAction();
+
+  // Mirrors getFloorAttendanceMode's own DO_FIRST default (attendance.js) —
+  // Mark absent is never blocked on a DO_FIRST floor, only a WARDEN_FIRST one
+  // still waiting on a hostel floor to finalize (pendingFloors, passed down
+  // from DOScreen below — same unfinalizedHostelFloorsForClass value the
+  // Approve button already gates on, not recomputed here).
+  const collegeFloor = state.collegeFloors.find((f) => f.id === c.collegeFloorId);
+  const attendanceMode = collegeFloor?.attendanceMode || "DO_FIRST";
+  const markAbsentBlocked = attendanceMode === "WARDEN_FIRST" && pendingFloors.length > 0;
+  const markAbsentTitle = markAbsentBlocked ? `Waiting on Warden finalization (${pendingFloors.join(", ")})` : undefined;
 
   const saveReason = (sid, reason) => runAction(() => api.verifyReason(date, c.id, sid, reason, session));
   const approve = () => withBusy(c.id, "approve", () => runAction(() => api.approveStage(date, c.id, session), "Approved"));
   const sendBack = (_c, reason) => withBusy(c.id, "sendback", () => runAction(() => api.sendBack(date, c.id, reason, session), "Sent back to Warden/LAI"));
+
+  // A student the DO marks absent themselves always arrives already
+  // confirmed (see markDoAbsent server-side) — dropping any stale
+  // present-override is just cleanup in case the same student was corrected
+  // to present earlier this session and is now being re-marked absent.
+  const markAbsent = (sid) =>
+    runAction(() => api.markDoAbsent(date, c.id, sid, session), "Marked absent").then((result) => {
+      if (!result) return;
+      setPresentOverrides((prev) => {
+        if (!prev.has(sid)) return prev;
+        const next = new Set(prev); next.delete(sid); return next;
+      });
+    });
+  const confirmAbsent = (sid) => runAction(() => api.confirmAbsent(date, c.id, sid, session));
+  // Same route either way (correctPresence fully erases the entry) — only
+  // whether this student HAD an external (Warden/LAI) report before this
+  // call decides the button label and whether they land in "Present"
+  // afterward. A DO-originated entry (hadExternalReport: false) had no
+  // outside claim to actively contradict, so it just falls back to "Not
+  // reported" instead.
+  const markPresent = (sid, hadExternalReport) =>
+    runAction(() => api.correctPresence(date, c.id, sid, session), hadExternalReport ? "Marked present" : "Undone").then((result) => {
+      if (result && hadExternalReport) setPresentOverrides((prev) => new Set(prev).add(sid));
+    });
+
+  // Window 1's roster, grouped into the three states described in this
+  // component's header (search filters this roster only — the "Already
+  // away" list above and Window 2 below are untouched by it). Away students
+  // are excluded here the same way the "Already away" section above already
+  // treats them: a separate, non-actionable list, not part of the classroom
+  // check at all.
+  const q = rosterQuery.trim().toLowerCase();
+  const roster = students
+    .filter((s) => s.classId === c.id && !s.awayReason)
+    .filter((s) => !q || s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q));
+  const notReported = [];
+  const previouslyMarked = [];
+  const presentGroup = [];
+  for (const s of roster) {
+    const wardenEntry = record.wardenAbsences?.[s.id];
+    const laiEntry = record.laiAbsences?.[s.id];
+    const doEntry = record.doAbsences?.[s.id];
+    if (wardenEntry || laiEntry || doEntry) {
+      previouslyMarked.push({ student: s, wardenEntry, laiEntry, doEntry, confirmed: !!record.doConfirmed?.[s.id] });
+    } else if (presentOverrides.has(s.id)) {
+      presentGroup.push(s);
+    } else {
+      notReported.push(s);
+    }
+  }
 
   return (
     <Card className="p-4">
@@ -5163,29 +5236,91 @@ function DoClassCard({ c, record, date, session, students, state, runAction }) {
             </div>
           )}
 
-          {list.length === 0 ? (
-            <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
-          ) : approved || subTab === "confirm" ? (
-            <div className="mt-3 space-y-2">
-              {!approved && <p className="text-xs text-slate-500">Right now, in the classroom — just confirm who's really absent. No calls needed for this part.</p>}
-              {list.map(({ student, meta, confirmed }) => student && (
-                <div key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                  <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI"}</span></span>
-                  {approved ? (
-                    confirmed && <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed</Badge>
-                  ) : confirmed ? (
-                    <div className="flex items-center gap-2">
-                      <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed absent</Badge>
-                      <button className="text-xs text-slate-400 underline hover:text-rose-600" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id, session), "Marked present instead")}>Actually present?</button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-1.5">
-                      <Btn size="sm" variant="success" onClick={() => runAction(() => api.confirmAbsent(date, c.id, student.id, session))}>Confirm absent</Btn>
-                      <Btn size="sm" variant="outline" onClick={() => runAction(() => api.correctPresence(date, c.id, student.id, session), "Marked present")}>Actually present</Btn>
-                    </div>
-                  )}
+          {approved ? (
+            list.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {list.map(({ student, meta, confirmed }) => student && (
+                  <div key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI"}</span></span>
+                    {confirmed && <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed</Badge>}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : subTab === "confirm" ? (
+            <div className="mt-3 space-y-4">
+              <SearchBox value={rosterQuery} onChange={setRosterQuery} placeholder="Search by name or roll number..." />
+              <p className="text-xs text-slate-500">Right now, in the classroom — mark who's absent, confirm anyone already reported, or correct the list. No calls needed for this part.</p>
+
+              {notReported.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Not reported ({notReported.length})</p>
+                  <div className="space-y-1.5">
+                    {notReported.map((s) => (
+                      <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                        <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll})</span></span>
+                        <span title={markAbsentTitle}>
+                          <Btn size="sm" variant="outline" disabled={markAbsentBlocked} onClick={() => markAbsent(s.id)}>Mark absent</Btn>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
+              )}
+
+              {previouslyMarked.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Previously marked absent ({previouslyMarked.length})</p>
+                  <div className="space-y-1.5">
+                    {previouslyMarked.map(({ student, wardenEntry, laiEntry, doEntry, confirmed }) => {
+                      const hasExternalReport = !!(wardenEntry || laiEntry);
+                      const tag = wardenEntry
+                        ? (wardenEntry.reason ? `Warden: ${wardenEntry.reason}` : "Warden: no reason yet")
+                        : laiEntry
+                        ? "reported by LAI"
+                        : doEntry.reason ? `You: ${doEntry.reason}` : "Marked absent by you";
+                      return (
+                        <div key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                          <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {tag}</span></span>
+                          {confirmed ? (
+                            <div className="flex items-center gap-2">
+                              <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed absent</Badge>
+                              <button className="text-xs text-slate-400 underline hover:text-rose-600" onClick={() => markPresent(student.id, hasExternalReport)}>
+                                {hasExternalReport ? "Present" : "Undo"}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex gap-1.5">
+                              <Btn size="sm" variant="success" onClick={() => confirmAbsent(student.id)}>Confirm absent</Btn>
+                              <Btn size="sm" variant="outline" onClick={() => markPresent(student.id, hasExternalReport)}>Present</Btn>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {presentGroup.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Present ({presentGroup.length})</p>
+                  <div className="space-y-1.5">
+                    {presentGroup.map((s) => (
+                      <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                        <span className="text-slate-700">{s.name} <span className="text-xs text-slate-400">({s.roll})</span></span>
+                        <span title={markAbsentTitle}>
+                          <Btn size="sm" variant="outline" disabled={markAbsentBlocked} onClick={() => markAbsent(s.id)}>Mark absent</Btn>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {roster.length === 0 && <p className="text-sm text-slate-400">No students match your search in this class.</p>}
             </div>
           ) : (
             <div className="mt-3 space-y-2">
@@ -5256,7 +5391,7 @@ function DOScreen({ state, date, me, runAction }) {
       </div>
       <div className="space-y-4">
         {floorClasses.map((c) => (
-          <DoClassCard key={`${c.id}-${session}`} c={c} record={state.attendance[date]?.[c.id]?.[session] || emptyRecord()} date={date} session={session} students={state.students} state={state} runAction={runAction} />
+          <DoClassCard key={`${c.id}-${session}`} c={c} record={state.attendance[date]?.[c.id]?.[session] || emptyRecord()} date={date} session={session} students={state.students} state={state} runAction={runAction} pendingFloors={unfinalizedHostelFloorsForClass(state, c.id, date, session)} />
         ))}
         {floorClasses.length === 0 && <EmptyNote text="No floor assigned to you yet." />}
       </div>
