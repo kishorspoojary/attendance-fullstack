@@ -74,7 +74,7 @@ function priorStageKey(stageKey) {
 // day. Every state here is derived from fields the pipeline already
 // writes — nothing new is tracked.
 function classroomStatus(rec) {
-  const combined = { ...(rec.wardenAbsences || {}), ...(rec.laiAbsences || {}) };
+  const combined = { ...(rec.wardenAbsences || {}), ...(rec.laiAbsences || {}), ...(rec.doAbsences || {}) };
   const ids = Object.keys(combined);
   const hasAbsentees = ids.length > 0;
   const idx = currentStageIndex(rec);
@@ -98,7 +98,7 @@ function classroomStatus(rec) {
 }
 function emptyRecord() {
   return {
-    wardenAbsences: {}, laiAbsences: {}, headcount: null, doConfirmed: {}, doVerified: {},
+    wardenAbsences: {}, laiAbsences: {}, doAbsences: {}, headcount: null, doConfirmed: {}, doVerified: {},
     doApproved: null, teacherApproved: null, coordinatorApproved: null,
     forcedPublish: false, skippedStages: [], sentBack: null,
   };
@@ -1045,7 +1045,7 @@ function classAttendanceForDate(state, classesInScope, day) {
   return classesInScope
     .map((c) => {
       const r = day[c.id] || emptyRecord();
-      const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+      const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {}), ...Object.keys(r.doAbsences || {})]);
       const roster = state.students.filter((s) => s.classId === c.id).length;
       if (roster === 0) return null;
       const awayCount = state.students.filter((s) => s.classId === c.id && s.awayReason && !absentIds.has(s.id)).length;
@@ -1114,7 +1114,7 @@ function aggregatePctFromRecordedOnly(state, classesInScope, day) {
     if (!r) continue;
     const roster = state.students.filter((s) => s.classId === c.id).length;
     if (roster === 0) continue;
-    const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+    const absentIds = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {}), ...Object.keys(r.doAbsences || {})]);
     const awayCount = state.students.filter((s) => s.classId === c.id && s.awayReason && !absentIds.has(s.id)).length;
     const presentCount = roster - absentIds.size - awayCount;
     totalRoster += roster;
@@ -1189,7 +1189,7 @@ function absentAllDay(dayRecords, studentId) {
   if (sessions.length === 0) return null;
   return sessions.every((s) => {
     const rec = dayRecords[s];
-    return !!rec.wardenAbsences?.[studentId] || !!rec.laiAbsences?.[studentId];
+    return !!rec.wardenAbsences?.[studentId] || !!rec.laiAbsences?.[studentId] || !!rec.doAbsences?.[studentId];
   });
 }
 
@@ -1205,7 +1205,7 @@ function absentAllDay(dayRecords, studentId) {
 // floor-scoped one — same scan, different threshold and a different slice
 // of students the caller passes in (all of them, or just one floor's).
 //
-// Deliberately scans only wardenAbsences/laiAbsences, never
+// Deliberately scans only wardenAbsences/laiAbsences/doAbsences, never
 // Student.awayReason/awaySince — those are a different, disjoint concept: a
 // manually-declared, open-ended leave that never generates daily
 // AttendanceRecord entries at all (WardenScreen shows "away" students in
@@ -1406,7 +1406,7 @@ function studentDayHistory(state, student, viewDate) {
       status = "absent";
     } else {
       const record = state.attendance[date]?.[student.classId]?.[DEFAULT_SESSION];
-      status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id]) ? "absent" : "present";
+      status = !record ? "none" : (record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id] || record.doAbsences?.[student.id]) ? "absent" : "present";
     }
     days.push({ date, status });
   }
@@ -1432,7 +1432,7 @@ function studentAllTimeStats(state, student, viewDate) {
     if (!record) continue;
     withRecord++;
     const isAway = student.awayReason && date >= student.awaySince;
-    if (!isAway && !(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id])) present++;
+    if (!isAway && !(record.wardenAbsences?.[student.id] || record.laiAbsences?.[student.id] || record.doAbsences?.[student.id])) present++;
   }
   return { present, withRecord, pct: withRecord > 0 ? (present / withRecord) * 100 : null };
 }
@@ -1477,7 +1477,7 @@ function ClassDetailView({ state, classId, viewDate, isToday, onBack }) {
   const roster = state.students
     .filter((s) => s.classId === classId)
     .map((s) => {
-      const isAbsent = !!record.wardenAbsences?.[s.id] || !!record.laiAbsences?.[s.id];
+      const isAbsent = !!record.wardenAbsences?.[s.id] || !!record.laiAbsences?.[s.id] || !!record.doAbsences?.[s.id];
       const { reason, isAway } = resolveAbsenceReason(s.id, record, s);
       return { student: s, isAbsent, isAway, reason };
     })
@@ -1736,7 +1736,7 @@ function AttendanceStatusBoard({ state, date, scopeFloorIds, title, subtitle }) 
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map(({ c, r }) => {
-              const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]).size;
+              const absentCount = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {}), ...Object.keys(r.doAbsences || {})]).size;
               const status = classroomStatus(r);
               return (
                 <tr key={c.id}>
@@ -2917,7 +2917,7 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
       {items.length === 0 && <EmptyNote text="Nothing waiting on you right now." />}
       <div className="space-y-3">
         {items.map(({ c, r }) => {
-          const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}) }).map(([sid, meta]) => ({
+          const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}), ...(r.doAbsences || {}) }).map(([sid, meta]) => ({
             student: state.students.find((s) => s.id === sid),
             reason: r.doVerified?.[sid]?.reason || meta.reason,
           }));
@@ -3008,7 +3008,7 @@ function CoordinatorObserverView({ state, date }) {
   const lecturerApproved = withRecord.filter(({ r }) => !!r.teacherApproved);
 
   const renderCard = ({ c, r }) => {
-    const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}) }).map(([sid, meta]) => ({
+    const absentees = Object.entries({ ...(r.wardenAbsences || {}), ...(r.laiAbsences || {}), ...(r.doAbsences || {}) }).map(([sid, meta]) => ({
       student: state.students.find((s) => s.id === sid),
       reason: r.doVerified?.[sid]?.reason || meta.reason,
     }));
@@ -4384,18 +4384,21 @@ function CreateStaffAdmin({ state, runAction }) {
 }
 
 // Read-only for the Database Manager: who's absent today, nothing else.
-// Combines Warden/LAI-reported absentees with persistent "away" students.
+// Combines Warden/LAI/DO-reported absentees with persistent "away" students.
 // Resolves why one student is on the absentee list, from whichever of the
-// three sources actually has it: a Warden's reason (wardenAbsences), an
+// four sources actually has it: a Warden's reason (wardenAbsences), an
 // LAI's entry (laiAbsences — schema.prisma notes LAI never sets a reason,
-// so this is always "—"), or the persistent away flag (Student.awayReason —
-// "Went home" and similar; doesn't touch today's record at all, see
-// constants.js). At most one of these applies to a given student on a given
-// day, so the first match wins.
+// so this is always "—"), a DO's own entry (doAbsences — see DoClassCard's
+// markDoAbsent, reason optional there too), or the persistent away flag
+// (Student.awayReason — "Went home" and similar; doesn't touch today's
+// record at all, see constants.js). At most one of these applies to a given
+// student on a given day, so the first match wins.
 function resolveAbsenceReason(studentId, record, student) {
   const wardenEntry = record.wardenAbsences?.[studentId];
   if (wardenEntry) return { reason: wardenEntry.reason || "—", isAway: false };
   if (record.laiAbsences?.[studentId]) return { reason: "—", isAway: false };
+  const doEntry = record.doAbsences?.[studentId];
+  if (doEntry) return { reason: doEntry.reason ? `DO: ${doEntry.reason}` : "Marked absent by DO", isAway: false };
   if (student.awayReason) return { reason: student.awayReason, isAway: true };
   return { reason: "—", isAway: false };
 }
@@ -4412,7 +4415,7 @@ function AbsenteesView({ state }) {
   const groups = state.classes
     .map((c) => {
       const r = day[c.id] || emptyRecord();
-      const ids = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {})]);
+      const ids = new Set([...Object.keys(r.wardenAbsences || {}), ...Object.keys(r.laiAbsences || {}), ...Object.keys(r.doAbsences || {})]);
       state.students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
       const students = [...ids]
         .map((sid) => state.students.find((s) => s.id === sid))
@@ -4523,7 +4526,7 @@ function ClasswiseAbsenteeReport({ state }) {
         const record = rangeData.data[date]?.[c.id]?.[session];
         if (!record) continue;
         daysWithRecord++;
-        const absentIds = new Set([...Object.keys(record.wardenAbsences || {}), ...Object.keys(record.laiAbsences || {})]);
+        const absentIds = new Set([...Object.keys(record.wardenAbsences || {}), ...Object.keys(record.laiAbsences || {}), ...Object.keys(record.doAbsences || {})]);
         absentIds.forEach((sid) => tally.set(sid, (tally.get(sid) || 0) + 1));
       }
       const students = [...tally.entries()]
