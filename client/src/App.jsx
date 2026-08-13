@@ -4527,6 +4527,12 @@ function ClasswiseAbsenteeReport({ state }) {
         if (!record) continue;
         daysWithRecord++;
         const absentIds = new Set([...Object.keys(record.wardenAbsences || {}), ...Object.keys(record.laiAbsences || {}), ...Object.keys(record.doAbsences || {})]);
+        // Same awaySince check as studentAllTimeStats, applied per-date here
+        // instead of against one date — away is a persistent flag, not a
+        // daily AttendanceRecord field, so it never shows up in
+        // wardenAbsences/laiAbsences/doAbsences and has to be added
+        // separately for every date in range where it was already active.
+        roster.forEach((s) => { if (s.awayReason && date >= s.awaySince) absentIds.add(s.id); });
         absentIds.forEach((sid) => tally.set(sid, (tally.get(sid) || 0) + 1));
       }
       const students = [...tally.entries()]
