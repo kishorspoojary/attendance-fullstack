@@ -5110,6 +5110,13 @@ function DoClassCard({ c, record, date, session, students, state, runAction, pen
   const combined = { ...(record.wardenAbsences || {}), ...(record.laiAbsences || {}), ...(record.doAbsences || {}) };
   const list = Object.entries(combined).map(([sid, meta]) => ({
     student: students.find((s) => s.id === sid), meta,
+    // Which bucket actually holds this entry — `combined`'s spread order
+    // decides which `meta` wins if a student is somehow in more than one,
+    // but the label below needs to know the real source, not just guess
+    // from meta.reason (that broke once doAbsences was added — see
+    // wardenEntry/laiEntry/doEntry in the "Previously marked absent" group
+    // further down, same priority order, same reasoning).
+    source: record.wardenAbsences?.[sid] ? "warden" : record.laiAbsences?.[sid] ? "lai" : "do",
     confirmed: !!record.doConfirmed?.[sid],
     verified: record.doVerified?.[sid]?.reason || null,
     // Auto-carried from the morning session's already-verified reason (see
@@ -5241,9 +5248,9 @@ function DoClassCard({ c, record, date, session, students, state, runAction, pen
               <p className="mt-3 text-sm text-slate-400">No fresh absentees reported for this class today.</p>
             ) : (
               <div className="mt-3 space-y-2">
-                {list.map(({ student, meta, confirmed }) => student && (
+                {list.map(({ student, meta, source, confirmed }) => student && (
                   <div key={student.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI"}</span></span>
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {source === "warden" ? `Warden: ${meta.reason || "no reason yet"}` : source === "lai" ? "reported by LAI" : meta.reason ? `You: ${meta.reason}` : "Marked absent by you"}</span></span>
                     {confirmed && <Badge tone="emerald"><CheckCircle2 size={11} /> Confirmed</Badge>}
                   </div>
                 ))}
@@ -5325,10 +5332,10 @@ function DoClassCard({ c, record, date, session, students, state, runAction, pen
           ) : (
             <div className="mt-3 space-y-2">
               <p className="text-xs text-slate-500">Later, after calling home or the Warden — record the actual reason for each confirmed absentee.</p>
-              {list.filter((i) => i.confirmed).map(({ student, meta, verified, carriedFromMorning }) => student && (
+              {list.filter((i) => i.confirmed).map(({ student, meta, source, verified, carriedFromMorning }) => student && (
                 <div key={student.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {meta.reason ? `Warden: ${meta.reason}` : "reported by LAI, no reason yet"}</span></span>
+                    <span className="text-slate-700">{student.name} <span className="text-xs text-slate-400">({student.roll}) — {source === "warden" ? `Warden: ${meta.reason || "no reason yet"}` : source === "lai" ? "reported by LAI" : meta.reason ? `You: ${meta.reason}` : "Marked absent by you"}</span></span>
                     {verified && (
                       carriedFromMorning
                         ? <Badge tone="blue">Same as this morning — no call needed</Badge>
