@@ -1646,13 +1646,10 @@ function PrincipalHeroDashboard({ state, date }) {
         <Field label="Date"><input type="date" max={date} className={`${inputCls} py-2.5 sm:w-auto`} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
       </div>
 
-      <Card className="mb-5 p-5">
+      <Card className="relative mb-5 p-5">
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
-      </Card>
-
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <AbsenteesPanel variant="tile" date={viewDate} />
-      </div>
+      </Card>
 
       <Card className="mb-5 p-5">
         <p className="mb-4 text-sm font-semibold text-slate-700">Classes by attendance</p>
@@ -3051,10 +3048,16 @@ function AbsenteesPanel({ date, variant = "badge" }) {
   return (
     <>
       {variant === "tile" ? (
+        // Absolute-positioned pill, anchored to the top-right corner of
+        // whichever Card/header this renders inside — that ancestor needs
+        // `relative` (see PrincipalHeroDashboard's hero Card and
+        // CoordinatorObserverView's title wrapper), not a sibling block
+        // below it. top-5/right-5 (1.25rem) matches p-5's own padding, so
+        // the pill sits flush with a p-5 Card's interior edge.
         <button type="button" onClick={() => setOpen(true)} disabled={data.loading}
-          className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-left shadow-sm transition hover:bg-rose-100 disabled:cursor-wait disabled:opacity-60">
-          <div className="font-display text-2xl font-bold text-rose-700">{data.loading ? "—" : count}</div>
-          <div className="text-xs text-slate-500">{isToday ? "Absent today" : `Absent — ${formatDMY(date)}`}</div>
+          className="absolute right-5 top-5 inline-flex items-center gap-1 rounded-full bg-rose-50 py-[5px] pl-2 pr-2.5 text-xs font-medium text-rose-700 transition hover:bg-rose-100 disabled:cursor-wait disabled:opacity-60">
+          <UserX size={14} />
+          {data.loading ? "…" : isToday ? `${count} absent today` : `${count} absent — ${formatDMY(date)}`}
         </button>
       ) : (
         <button type="button" onClick={() => setOpen(true)} disabled={data.loading} className="disabled:cursor-wait disabled:opacity-60">
@@ -3154,8 +3157,8 @@ function CoordinatorObserverView({ state, date }) {
 
   return (
     <div>
-      <SectionTitle icon={ClipboardCheck} title="Attendance activity" subtitle="Read-only, institution-wide — Coordinator no longer approves individual classes." />
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="relative">
+        <SectionTitle icon={ClipboardCheck} title="Attendance activity" subtitle="Read-only, institution-wide — Coordinator no longer approves individual classes." />
         <AbsenteesPanel variant="tile" date={date} />
       </div>
       <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Awaiting Lecturer</p>
