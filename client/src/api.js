@@ -100,6 +100,9 @@ export const api = {
   // ---- Bounded attendance range (trend/long-leave calculations) ----
   getAttendanceRange: (from, to) => request(`/attendance?from=${from}&to=${to}`),
 
+  // ---- Absentee roster (Coordinator: institution-wide; Lecturer: own floor, server-enforced) ----
+  getAbsentees: (date) => request(`/attendance/absentees?date=${date}`),
+
   // ---- Master-data change proposals (Database Manager -> AO) ----
   proposeChange: (type, summary, payload) => request("/changes", { method: "POST", body: { type, summary, payload } }),
   approveChange: (id) => request(`/changes/${id}/approve`, { method: "POST" }),

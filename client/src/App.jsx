@@ -1650,6 +1650,10 @@ function PrincipalHeroDashboard({ state, date }) {
         <HeroAttendanceNumber pct={todayPct} delta={delta} loadingTrend={rangeData.loading} />
       </Card>
 
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <AbsenteesPanel variant="tile" date={viewDate} />
+      </div>
+
       <Card className="mb-5 p-5">
         <p className="mb-4 text-sm font-semibold text-slate-700">Classes by attendance</p>
         <div className="mb-4">
@@ -1712,6 +1716,7 @@ function AttendanceStatusBoard({ state, date, scopeFloorIds, title, subtitle }) 
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <SectionTitle icon={LayoutDashboard} title={title} subtitle={subtitle} />
         <div className="flex flex-wrap items-end gap-2">
+          {scopeFloorIds && <AbsenteesPanel variant="badge" date={viewDate} />}
           <Field label="Date"><input type="date" max={date} className={inputCls} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
         </div>
       </div>
@@ -2988,6 +2993,106 @@ function ApprovalQueue({ state, date, runAction, stageKey, requiredPriorKey, rol
   );
 }
 
+// "N absent today" trigger + list, backed by GET /attendance/absentees —
+// unlike almost every other view in this file, that endpoint is scoped
+// server-side by role (Coordinator: institution-wide; Lecturer: their own
+// floor only, via req.user.floorIds — see that route's own comment), so
+// this component never filters by floor itself; it just shows whatever the
+// server already decided this account gets to see. Self-fetches on mount
+// and whenever `date` changes, same pattern ClasswiseAbsenteeReport already
+// uses for its own date-scoped fetch, rather than riding along on the
+// already-loaded `state` prop the rest of the app reads from (this data
+// isn't part of that big /state snapshot).
+//
+// Not wired into either of its two call sites yet — this is the standalone
+// component only, added for review before touching CoordinatorObserverView
+// (a new stat tile, sized like PrincipalHeroDashboard's Stat) or
+// AttendanceStatusBoard (a badge). `variant` is what lets the same
+// component serve both: "tile" renders a bigger, Stat-shaped card; "badge"
+// (the default) renders a small pill, matching Badge's own visual language
+// without importing Badge itself (Badge isn't a button and isn't meant to
+// be one — wrapping it would fight its own component, not reuse it).
+function AbsenteesPanel({ date, variant = "badge" }) {
+  const [data, setData] = useState({ loading: true, absentees: [] });
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all"); // "all" | "hosteller" | "dayScholar"
+
+  useEffect(() => {
+    let cancelled = false;
+    setData({ loading: true, absentees: [] });
+    api.getAbsentees(date)
+      .then((resp) => { if (!cancelled) setData({ loading: false, absentees: resp.absentees || [] }); })
+      .catch(() => { if (!cancelled) setData({ loading: false, absentees: [] }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  const count = data.absentees.length;
+  // AttendanceStatusBoard passes its own user-picked viewDate here, not
+  // always today's — "N absent today" would be wrong once someone's looked
+  // back at an earlier date, so the label only says "today" when it
+  // actually is.
+  const isToday = date === todayStr();
+  const q = query.trim().toLowerCase();
+  // isLocal true means day scholar, false means hosteller — see
+  // schema.prisma's own comment on Student.isLocal; easy to get backwards,
+  // so spelled out here rather than left implicit in the filter below.
+  const visible = data.absentees
+    .filter((a) => filter === "all" || (filter === "hosteller" ? !a.isLocal : a.isLocal))
+    .filter((a) => !q || a.name.toLowerCase().includes(q) || a.roll.toLowerCase().includes(q) || a.className.toLowerCase().includes(q));
+
+  const FILTERS = [
+    { key: "all", label: "All" },
+    { key: "hosteller", label: "Hostellers" },
+    { key: "dayScholar", label: "Day scholars" },
+  ];
+
+  return (
+    <>
+      {variant === "tile" ? (
+        <button type="button" onClick={() => setOpen(true)} disabled={data.loading}
+          className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-left shadow-sm transition hover:bg-rose-100 disabled:cursor-wait disabled:opacity-60">
+          <div className="font-display text-2xl font-bold text-rose-700">{data.loading ? "—" : count}</div>
+          <div className="text-xs text-slate-500">{isToday ? "Absent today" : `Absent — ${formatDMY(date)}`}</div>
+        </button>
+      ) : (
+        <button type="button" onClick={() => setOpen(true)} disabled={data.loading} className="disabled:cursor-wait disabled:opacity-60">
+          <Badge tone="rose">{data.loading ? "Loading absentees..." : `${count} absent${isToday ? " today" : ` — ${formatDMY(date)}`}`}</Badge>
+        </button>
+      )}
+
+      {open && (
+        <Modal title={`Absentees — ${formatDMY(date)}`} onClose={() => setOpen(false)}>
+          <SearchBox value={query} onChange={setQuery} placeholder="Search by name, roll, or class..." />
+          <div className="mb-3 inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+            {FILTERS.map((f) => (
+              <button key={f.key} type="button" onClick={() => setFilter(f.key)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${filter === f.key ? "bg-[#12324D] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="max-h-80 space-y-1.5 overflow-y-auto">
+            {visible.map((a) => (
+              <div key={a.studentId} className="rounded-lg border border-slate-200 p-2.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-slate-800">{a.name}</span>
+                  <span className="text-xs text-slate-400">{a.roll}</span>
+                </div>
+                <div className="mt-0.5 text-xs text-slate-500">{a.className} — {a.hostelName || "Day scholar"}{a.reason ? ` · ${a.reason}` : ""}</div>
+              </div>
+            ))}
+            {visible.length === 0 && (
+              <p className="py-4 text-center text-sm text-slate-400">{data.loading ? "Loading..." : "No students match."}</p>
+            )}
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 // Coordinator's institution-wide, read-only view of the DO -> Lecturer
 // approval queue. Replaces the old ApprovalQueue-based approve/send-back
 // capability now that Coordinator only observes (see stages.js) — same
@@ -3050,6 +3155,9 @@ function CoordinatorObserverView({ state, date }) {
   return (
     <div>
       <SectionTitle icon={ClipboardCheck} title="Attendance activity" subtitle="Read-only, institution-wide — Coordinator no longer approves individual classes." />
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <AbsenteesPanel variant="tile" date={date} />
+      </div>
       <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Awaiting Lecturer</p>
       {awaitingLecturer.length === 0 ? (
         <EmptyNote text="Nothing waiting on a Lecturer right now." />

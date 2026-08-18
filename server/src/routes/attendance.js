@@ -852,3 +852,92 @@ attendanceRouter.get("/attendance", requireAuth, async (req, res) => {
 
   res.json({ attendance });
 });
+
+// --------------------------------------------------------------------------
+// Today's absentee roster for Principal and Coordinator (both institution-
+// wide) and Lecturer (their own floor only) — the first read endpoint in
+// this app that actually
+// enforces its role scoping server-side rather than leaving it to the
+// frontend to hide (see GET /state's own comment: that route still returns
+// every floor's data to everyone, unfiltered). MORNING-only for now, same
+// phase-1 simplification as /excel/absentees/export and the client's
+// AbsenteesView.
+//
+// `classes` is pre-filtered to the caller's scope before either query below
+// runs, and the AttendanceRecord query is further scoped to just those
+// classIds — belt-and-suspenders so a Lecturer's response can never contain
+// another floor's row even if the classes filter above were ever wrong.
+//
+// Absence source is the same three-bucket merge the client's AbsenteesView/
+// CoordinatorObserverView use post-doAbsences-fix — { ...wardenAbsences,
+// ...laiAbsences, ...doAbsences } — deliberately NOT copying
+// /excel/absentees/export's older two-bucket merge, which still undercounts
+// DO_FIRST floors (a known, separately-tracked gap in that route).
+// --------------------------------------------------------------------------
+
+// `classes` is a Classroom[] with `students` included, each student's `room`
+// included down through hostelFloor -> hostel (same include shape
+// studentViews.js's shapeByClass uses). `recordByClassId` is classId -> the
+// MORNING AttendanceRecord for the requested date, or undefined if nothing's
+// been marked yet for that class. Pure — no Prisma/Express here — so it's
+// testable against a plain fixture, same separation excel.js's
+// validateImportRows/diffAndValidateRoster and studentViews.js's
+// shapeByClass already use.
+export function shapeAbsentees(classes, recordByClassId) {
+  const rows = [];
+  for (const c of classes) {
+    const r = recordByClassId[c.id];
+    const combined = { ...(r?.wardenAbsences || {}), ...(r?.laiAbsences || {}), ...(r?.doAbsences || {}) };
+    for (const student of c.students) {
+      const entry = combined[student.id];
+      const isAway = !entry && !!student.awayReason;
+      if (!entry && !isAway) continue; // present — not on the list
+      rows.push({
+        studentId: student.id,
+        roll: student.roll,
+        name: student.name,
+        className: c.name,
+        isLocal: student.isLocal,
+        // Populated only for hostellers (isLocal false) — the frontend shows
+        // "Day scholar" whenever this is null, same convention shapeByClass
+        // already established.
+        hostelName: student.room?.hostelFloor?.hostel?.name || null,
+        // The DO's verified reason (if the DO has since called it in) wins
+        // over whatever the original report said — same priority
+        // CoordinatorObserverView's renderCard already uses. Falls back to
+        // the persistent away reason for a student who's away rather than
+        // freshly reported; null (not a placeholder string) when nothing's
+        // recorded, same as every other field here — display formatting is
+        // the frontend's job, not this endpoint's.
+        reason: r?.doVerified?.[student.id]?.reason || entry?.reason || (isAway ? student.awayReason : null),
+      });
+    }
+  }
+  rows.sort((a, b) => a.className.localeCompare(b.className) || a.roll.localeCompare(b.roll));
+  return rows;
+}
+
+attendanceRouter.get("/attendance/absentees", requireAuth, requireRole("PRINCIPAL", "COORDINATOR", "LECTURER"), async (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: "date is required (YYYY-MM-DD)" });
+
+  // Principal and Coordinator are both institution-wide, unscoped roles
+  // (see CoordinatorObserverView's own comment); Lecturer's floorIds holds
+  // CollegeFloor ids (see schema.prisma's modeling note on User.floorIds) —
+  // the real enforcement, not just a UI filter. An empty floorIds
+  // (misconfigured account) correctly yields zero classes rather than
+  // accidentally falling through to "all".
+  const classWhere = req.user.role === "LECTURER" ? { collegeFloorId: { in: req.user.floorIds || [] } } : {};
+
+  const classes = await prisma.classroom.findMany({
+    where: classWhere,
+    include: { students: { include: { room: { include: { hostelFloor: { include: { hostel: true } } } } } } },
+  });
+
+  const records = await prisma.attendanceRecord.findMany({
+    where: { date, session: "MORNING", classId: { in: classes.map((c) => c.id) } },
+  });
+  const recordByClassId = Object.fromEntries(records.map((r) => [r.classId, r]));
+
+  res.json({ absentees: shapeAbsentees(classes, recordByClassId) });
+});

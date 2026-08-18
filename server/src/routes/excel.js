@@ -330,8 +330,8 @@ excelRouter.get("/excel/students/export", requireAuth, requireRole("DB_MANAGER")
 });
 
 // Everyone absent on a given date — same roll/name/class shape as the
-// Database Manager's read-only Absentees view, combining Warden/LAI-reported
-// absentees for that date with students currently flagged "away".
+// Database Manager's read-only Absentees view, combining Warden/LAI/DO-
+// reported absentees for that date with students currently flagged "away".
 excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"), async (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "date is required" });
@@ -349,14 +349,24 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
   ]);
   const recordByClassId = Object.fromEntries(records.map((r) => [r.classId, r]));
 
-  // Same reason resolution as the client's AbsenteesView: a Warden's
-  // wardenAbsences entry (may have a reason), an LAI's laiAbsences entry
-  // (schema.prisma notes LAI never sets a reason, hence "—"), or the
-  // persistent away flag on the student — at most one applies per student.
+  // The DO's verified reason (if the DO has since called it in) wins over
+  // whatever the original report said — same priority shapeAbsentees
+  // (routes/attendance.js, GET /attendance/absentees) already uses, so this
+  // export and that endpoint never disagree about the same student's
+  // reason. Below that: a Warden's wardenAbsences entry (may have a
+  // reason), an LAI's laiAbsences entry (schema.prisma notes LAI never
+  // sets a reason, hence "—"), a DO's own doAbsences entry (reason
+  // optional there too — see DoClassCard's markDoAbsent), or the
+  // persistent away flag on the student — at most one of these last four
+  // applies per student.
   const resolveReason = (studentId, record, student) => {
+    const verified = record?.doVerified?.[studentId]?.reason;
+    if (verified) return verified;
     const wardenEntry = record?.wardenAbsences?.[studentId];
     if (wardenEntry) return wardenEntry.reason || "—";
     if (record?.laiAbsences?.[studentId]) return "—";
+    const doEntry = record?.doAbsences?.[studentId];
+    if (doEntry) return doEntry.reason || "—";
     if (student.awayReason) return `${student.awayReason} (away)`;
     return "—";
   };
@@ -364,7 +374,7 @@ excelRouter.get("/excel/absentees/export", requireAuth, requireRole("DB_MANAGER"
   const rows = [];
   for (const c of classes) {
     const r = recordByClassId[c.id];
-    const ids = new Set([...Object.keys(r?.wardenAbsences || {}), ...Object.keys(r?.laiAbsences || {})]);
+    const ids = new Set([...Object.keys(r?.wardenAbsences || {}), ...Object.keys(r?.laiAbsences || {}), ...Object.keys(r?.doAbsences || {})]);
     students.filter((s) => s.classId === c.id && s.awayReason).forEach((s) => ids.add(s.id));
     for (const sid of ids) {
       const student = students.find((s) => s.id === sid);
