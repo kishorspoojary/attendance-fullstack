@@ -1641,9 +1641,13 @@ function PrincipalHeroDashboard({ state, date }) {
     // a lot of empty space across a desktop-width content area — this view
     // is designed for mobile first, not adapted from a desktop layout.
     <div className="mx-auto w-full max-w-md sm:max-w-lg">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <SectionTitle icon={LayoutDashboard} title="Attendance" subtitle={isToday ? `Today — ${formatDMY(viewDate)}` : `Viewing history for ${formatDMY(viewDate)}`} />
-        <Field label="Date"><input type="date" max={date} className={`${inputCls} py-2.5 sm:w-auto`} value={viewDate} onChange={(e) => setViewDate(e.target.value)} /></Field>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        {/* Subtitle drops the formatted date once it's redundant right next
+            to the date input in this same row — "Today — 18/08/2026" next
+            to an input already showing that date is the exact duplication
+            this whole change is meant to remove. */}
+        <SectionTitle icon={LayoutDashboard} title="Attendance" subtitle={isToday ? "Today" : "Viewing history"} />
+        <input type="date" max={date} className={`${inputCls} w-36 py-2.5`} value={viewDate} onChange={(e) => setViewDate(e.target.value)} />
       </div>
 
       <Card className="relative mb-5 p-5">
