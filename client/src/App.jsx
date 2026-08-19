@@ -2393,8 +2393,14 @@ function AOHierarchyStatus({ state, runAction }) {
   const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
   const floorsWithoutTeacher = state.collegeFloors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
   const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
+  // Floor names alone can collide across hostels (e.g. two different
+  // hostels each with a floor named "2"), so Warden gaps are prefixed with
+  // the parent hostel's name — same "→" breadcrumb convention as
+  // pendingChangeParentPath above. CollegeFloor (DO/Lecturer gaps) has no
+  // such parent to disambiguate against, so those stay bare.
+  const hostelNameFor = (f) => state.hostels.find((h) => h.id === f.hostelId)?.name;
   const gaps = [
-    ...hostelFloorsWithoutWarden.map((f) => `${f.name} has no Warden`),
+    ...hostelFloorsWithoutWarden.map((f) => `${hostelNameFor(f)} → ${f.name} has no Warden`),
     ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
     ...floorsWithoutTeacher.map((f) => `${f.name} has no Lecturer`),
     ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
