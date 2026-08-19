@@ -2392,21 +2392,52 @@ function AOHierarchyStatus({ state, runAction }) {
   const hostelFloorsWithoutWarden = state.hostelFloors.filter((f) => !wardens.some((w) => (w.floorIds || []).includes(f.id)));
   const floorsWithoutDO = state.collegeFloors.filter((f) => !dos.some((d) => (d.floorIds || []).includes(f.id)));
   const floorsWithoutTeacher = state.collegeFloors.filter((f) => !teachers.some((t) => (t.floorIds || []).includes(f.id)));
-  const classesWithoutLAI = state.classes.filter((c) => !lais.some((l) => (l.classIds || []).includes(c.id)));
   // Floor names alone can collide across hostels (e.g. two different
   // hostels each with a floor named "2"), so Warden gaps are prefixed with
   // the parent hostel's name — same "→" breadcrumb convention as
   // pendingChangeParentPath above. CollegeFloor (DO/Lecturer gaps) has no
   // such parent to disambiguate against, so those stay bare.
   const hostelNameFor = (f) => state.hostels.find((h) => h.id === f.hostelId)?.name;
-  const gaps = [
-    ...hostelFloorsWithoutWarden.map((f) => `${hostelNameFor(f)} → ${f.name} has no Warden`),
-    ...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`),
-    ...floorsWithoutTeacher.map((f) => `${f.name} has no Lecturer`),
-    ...classesWithoutLAI.map((c) => `${c.name} has no Local Attendance Incharge`),
-    ...state.staff.filter((s) => s.status === "PENDING").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is waiting on approval`),
-    ...state.staff.filter((s) => s.status === "FROZEN").map((s) => `${s.name} (${ROLE_LABELS[s.role]}) is frozen`),
-  ];
+
+  // Gaps grouped by role instead of one flat list — each role gets its own
+  // card below, so no role label is needed on individual lines the way the
+  // old flat list needed "(Warden)" etc. to tell entries apart.
+  const pendingOf = (role) => state.staff.filter((s) => s.role === role && s.status === "PENDING").map((s) => `${s.name} is waiting on approval`);
+  const frozenOf = (role) => state.staff.filter((s) => s.role === role && s.status === "FROZEN").map((s) => `${s.name} is frozen`);
+
+  const wardenGaps = [...hostelFloorsWithoutWarden.map((f) => `${hostelNameFor(f)} → ${f.name} has no Warden`), ...pendingOf("WARDEN"), ...frozenOf("WARDEN")];
+  const doGaps = [...floorsWithoutDO.map((f) => `${f.name} has no Discipline Officer`), ...pendingOf("DO"), ...frozenOf("DO")];
+  const lecturerGaps = [...floorsWithoutTeacher.map((f) => `${f.name} has no Lecturer`), ...pendingOf("LECTURER"), ...frozenOf("LECTURER")];
+
+  // LAI is one pool for the whole college (unlike Warden/DO/Lecturer, each
+  // pooled per floor) — so unlike the other three groups this is always
+  // exactly one status line, never a per-class list. "Assigned" requires an
+  // ACTIVE LAI specifically: a PENDING (not yet approved) or FROZEN (can't
+  // log in) account can't actually provide coverage.
+  const anyActiveLAI = lais.some((l) => l.status === "ACTIVE");
+  const laiPendingFrozen = [...pendingOf("LAI"), ...frozenOf("LAI")];
+  const laiItems = [anyActiveLAI ? "Local Attendance Incharges — assigned" : "Local Attendance Incharges — not assigned", ...laiPendingFrozen];
+
+  // The positive "assigned" LAI line is informational, not an action item,
+  // so — unlike every other line here — it's excluded from this count.
+  const totalToReview = wardenGaps.length + doGaps.length + lecturerGaps.length + (anyActiveLAI ? 0 : 1) + laiPendingFrozen.length;
+
+  // items.length === 0 hides the card entirely (Wardens/DOs/Lecturers only
+  // show up when there's something to flag); laiItems always has at least
+  // its one status line, so the LAI card always renders. `ok` swaps the
+  // amber "needs attention" styling for a neutral one when there's nothing
+  // to flag — only ever true for a fully-covered LAI card.
+  const GapCard = ({ label, items, ok }) => {
+    if (items.length === 0) return null;
+    return (
+      <Card className={ok ? "p-4" : "border-amber-200 bg-amber-50 p-4"}>
+        <p className={`mb-2 text-sm font-semibold ${ok ? "text-slate-700" : "text-amber-800"}`}>{label}</p>
+        <ul className={`list-inside list-disc space-y-1 text-sm ${ok ? "text-slate-600" : "text-amber-700"}`}>
+          {items.map((g, i) => <li key={i}>{g}</li>)}
+        </ul>
+      </Card>
+    );
+  };
 
   const Group = ({ label, list, describe }) => (
     <Card className="p-4">
@@ -2426,17 +2457,18 @@ function AOHierarchyStatus({ state, runAction }) {
   return (
     <div>
       <SectionTitle icon={Users} title="Hierarchy status" subtitle="Who covers what, and any gaps in coverage." />
-      {gaps.length > 0 && (
-        <Card className="mb-5 border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start gap-2 text-sm text-amber-800">
-            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-            <div>
-              <p className="font-medium">{gaps.length} thing(s) to review</p>
-              <ul className="mt-1 list-inside list-disc text-amber-700">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
-            </div>
-          </div>
-        </Card>
+      {totalToReview > 0 && (
+        <div className="mb-3 flex items-center gap-2 text-sm font-medium text-amber-800">
+          <AlertTriangle size={15} className="shrink-0" />
+          <span>{totalToReview} thing(s) to review</span>
+        </div>
       )}
+      <div className="mb-5 grid gap-4 md:grid-cols-2">
+        <GapCard label="Wardens" items={wardenGaps} />
+        <GapCard label="Discipline Officers" items={doGaps} />
+        <GapCard label="Lecturers" items={lecturerGaps} />
+        <GapCard label="Local Attendance Incharges" items={laiItems} ok={anyActiveLAI && laiPendingFrozen.length === 0} />
+      </div>
       {activeLocks.length > 0 && (
         <Card className="mb-5 p-4">
           <p className="mb-3 text-sm font-semibold text-slate-700">Active floor locks</p>
